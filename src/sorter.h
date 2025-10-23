@@ -9,6 +9,8 @@
 #include <cstdlib>
 #include <fcntl.h>
 #include <unistd.h>
+#include <chrono>
+#include <iomanip>
 
 #include "key_index_pair.h"
 #include "sorted_run.h"
@@ -66,17 +68,30 @@ void Sorter<KeyLength, ValueLength>::sort() {
     uint64_t num_runs = config.num_runs();
 
     std::cout << "Number of runs: " << num_runs << "\n";
+    double total_sort_time = 0.0;
 
     for (int i=0; i<num_runs; i++) {
         auto v = read_input_chunk(i);
+        auto sort_start = std::chrono::high_resolution_clock::now();
         in_place_sort(v);
+        auto sort_end = std::chrono::high_resolution_clock::now();
+        
+        auto sort_duration = std::chrono::duration_cast<std::chrono::microseconds>(sort_end - sort_start);
+        double sort_time_ms = sort_duration.count() / 1000.0;
+        total_sort_time += sort_time_ms;
+        
         if (i < num_runs - 1) {
             write_intermediate_buffer_to_disk(v, i);
         } else {
             last_run = std::move(v);
         }
     }
+    
+    auto total_sort_end = std::chrono::high_resolution_clock::now();
+    
     std::cout << "Sorted all runs\n";
+    std::cout << "Total in-place sort time: " << std::fixed << std::setprecision(3) 
+              << total_sort_time << " ms\n";
 
     if (num_runs == 1) {
         write_output_chunk(last_run.data(), config.file_size_bytes);

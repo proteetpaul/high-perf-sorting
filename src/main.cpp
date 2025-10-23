@@ -14,7 +14,6 @@ struct ParsedArgs {
     size_t key_size;
     size_t value_size;
     size_t memory_size;
-    size_t read_chunk_size;
     size_t merge_input_chunk_size;
     size_t merge_output_chunk_size;
 };
@@ -82,9 +81,9 @@ std::string formatFileSize(size_t bytes) {
     } else if (size >= 100.0) {
         oss << static_cast<int>(size);
     } else if (size >= 10.0) {
-        oss << std::fixed << std::setprecision(1) << size;
+        oss << static_cast<int>(size);
     } else {
-        oss << std::fixed << std::setprecision(2) << size;
+        oss << static_cast<int>(size);
     }
     
     oss << units[unit];
@@ -114,7 +113,6 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
     args.key_size = 10;
     args.value_size = 90;
     args.memory_size = parseSizeString("100M");  // 100MB default
-    args.read_chunk_size = parseSizeString("100M");  // 100MB default
     args.merge_input_chunk_size = parseSizeString("1M");  // 1MB default
     args.merge_output_chunk_size = parseSizeString("1M");  // 1MB default
     
@@ -137,9 +135,6 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
             }
             else if (arg == "--memory-size" && i + 1 < argc) {
                 args.memory_size = parseSizeString(argv[++i]);
-            }
-            else if (arg == "--read-chunk-size" && i + 1 < argc) {
-                args.read_chunk_size = parseSizeString(argv[++i]);
             }
             else if (arg == "--merge-read-chunk-size" && i + 1 < argc) {
                 args.merge_input_chunk_size = parseSizeString(argv[++i]);

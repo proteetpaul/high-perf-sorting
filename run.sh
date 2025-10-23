@@ -8,7 +8,7 @@ MEMORY_SIZE="100M"
 READ_CHUNK_SIZE="100M"
 MERGE_READ_CHUNK_SIZE="1M"
 MERGE_WRITE_CHUNK_SIZE="1M"
-WORKING_DIR="."
+WORKING_DIR=$(realpath ".")
 ENABLE_PROFILE=false
 PROFILE_OUTPUT="perf.data"
 FLAMEGRAPH_OUTPUT="flamegraph.svg"
@@ -21,7 +21,6 @@ show_usage() {
     echo "  --key-size SIZE            Key size in bytes (default: 8)"
     echo "  --value-size SIZE          Value size in bytes (default: 8)"
     echo "  --memory-size SIZE         Memory size (default: 100M)"
-    echo "  --read-chunk-size SIZE     Read chunk size (default: 100M)"
     echo "  --merge-read-chunk-size SIZE  Merge read chunk size (default: 1M)"
     echo "  --merge-write-chunk-size SIZE Merge write chunk size (default: 1M)"
     echo "  --working-dir DIR          Working directory (default: .)"
@@ -58,10 +57,6 @@ while [[ $# -gt 0 ]]; do
             MEMORY_SIZE="$2"
             shift 2
             ;;
-        --read-chunk-size)
-            READ_CHUNK_SIZE="$2"
-            shift 2
-            ;;
         --merge-read-chunk-size)
             MERGE_READ_CHUNK_SIZE="$2"
             shift 2
@@ -72,6 +67,8 @@ while [[ $# -gt 0 ]]; do
             ;;
         --working-dir)
             WORKING_DIR="$2"
+            # Convert to absolute path
+            WORKING_DIR=$(realpath "$WORKING_DIR")
             shift 2
             ;;
         --profile)
@@ -131,9 +128,9 @@ if [ ! -f "$INPUT_FILE" ]; then
     echo "Generating test data..."
     python3 $ROOT_DIR/tools/generate_records.py \
         --output "$INPUT_FILE" \
-        --file-size "$FILE_SIZE" \
-        --key-size "$KEY_SIZE" \
-        --value-size "$VALUE_SIZE"
+        --total-size "$FILE_SIZE" \
+        --key-bytes "$KEY_SIZE" \
+        --value-bytes "$VALUE_SIZE"
     
     if [ $? -ne 0 ]; then
         echo "Failed to generate test data!"
@@ -143,7 +140,7 @@ fi
 
 # Prepare command arguments
 CMD_ARGS="--file-size $FILE_SIZE --key-size $KEY_SIZE --value-size $VALUE_SIZE"
-CMD_ARGS="$CMD_ARGS --memory-size $MEMORY_SIZE --read-chunk-size $READ_CHUNK_SIZE"
+CMD_ARGS="$CMD_ARGS --memory-size $MEMORY_SIZE"
 CMD_ARGS="$CMD_ARGS --merge-read-chunk-size $MERGE_READ_CHUNK_SIZE --merge-write-chunk-size $MERGE_WRITE_CHUNK_SIZE"
 CMD_ARGS="$CMD_ARGS --working-dir $WORKING_DIR"
 

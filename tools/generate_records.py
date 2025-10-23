@@ -6,9 +6,7 @@ Inputs:
 - key-bytes: number of bytes in each key
 - value-bytes: number of bytes in each value
 - total-size: total output size, accepts suffixes like MB/GB (e.g., 1024MB, 1GB)
-- out-dir: output directory path. Output file name is derived as
-  <base-name>-<size>.bin (e.g., records-1GB.bin)
-- base-name: optional base name for the file (default: records)
+- output: output file path (e.g., /tmp/input-1GB.dat)
 - distribution: record distribution; currently only 'uniform' is implemented
 
 Record format per SortBenchmark convention: [key bytes][value bytes], fixed lengths.
@@ -16,7 +14,7 @@ Record format per SortBenchmark convention: [key bytes][value bytes], fixed leng
 Example:
   python tools/generate_records.py \
     --key-bytes 10 --value-bytes 90 --total-size 1GB \
-    --out-dir /tmp --base-name records --distribution uniform
+    --output /tmp/input-1GB.dat --distribution uniform
 """
 
 import argparse
@@ -124,21 +122,6 @@ def write_uniform_records(
 
     return written_records, bytes_written, leftover
 
-
-def human_size_suffix(total_bytes: int) -> str:
-    """Format a size suffix (e.g., 1GB, 512MB, 123B) using binary units.
-
-    Prefers GB when total_bytes is a multiple of 2^30, then MB (2^20), else B.
-    """
-    gb = 1024 ** 3
-    mb = 1024 ** 2
-    if total_bytes % gb == 0:
-        return f"{total_bytes // gb}GB"
-    if total_bytes % mb == 0:
-        return f"{total_bytes // mb}MB"
-    return f"{total_bytes}B"
-
-
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -166,16 +149,10 @@ def main(argv: list[str]) -> int:
         ),
     )
     parser.add_argument(
-        "--out-dir",
+        "--output",
         type=str,
         required=True,
-        help="Output directory path",
-    )
-    parser.add_argument(
-        "--base-name",
-        type=str,
-        default="input.dat",
-        help="Base name for the output file (default: records)",
+        help="Output file path",
     )
     parser.add_argument(
         "--distribution",
@@ -206,11 +183,12 @@ def main(argv: list[str]) -> int:
     if args.distribution != "uniform":
         raise SystemExit("Only 'uniform' distribution is implemented at this time.")
 
-    os.makedirs(args.out_dir or ".", exist_ok=True)
+    # Create output directory if it doesn't exist
+    out_dir = os.path.dirname(args.output)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
 
-    size_suffix = human_size_suffix(total_bytes)
-    out_filename = f"{args.base_name}-{size_suffix}.bin"
-    out_path = os.path.join(args.out_dir, out_filename)
+    out_path = args.output
 
     records, bytes_written, leftover = write_uniform_records(
         file_path=out_path,
