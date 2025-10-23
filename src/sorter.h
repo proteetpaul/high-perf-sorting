@@ -66,8 +66,14 @@ void Sorter<KeyLength, ValueLength>::sort() {
     std::vector<KeyValuePair<KeyLength, ValueLength>> last_run;
 
     uint64_t num_runs = config.num_runs();
+    uint64_t memory_size_bytes = config.run_size_bytes;
+    uint64_t read_chunk_size_bytes = (memory_size_bytes / (num_runs + 1));
+    read_chunk_size_bytes = (read_chunk_size_bytes / sizeof(KeyValuePair<KeyLength, ValueLength>)) * sizeof(KeyValuePair<KeyLength, ValueLength>);
+    config.merge_read_chunk_size = read_chunk_size_bytes;
+    config.merge_write_chunk_size = read_chunk_size_bytes;
 
     std::cout << "Number of runs: " << num_runs << "\n";
+    std::cout << "Chunk size for merge step: " << read_chunk_size_bytes << "\n";
     double total_sort_time = 0.0;
 
     for (int i=0; i<num_runs; i++) {
@@ -80,7 +86,7 @@ void Sorter<KeyLength, ValueLength>::sort() {
         double sort_time_ms = sort_duration.count() / 1000.0;
         total_sort_time += sort_time_ms;
         
-        if (i < num_runs - 1) {
+        if (num_runs > 1) {
             write_intermediate_buffer_to_disk(v, i);
         } else {
             last_run = std::move(v);
@@ -120,7 +126,7 @@ void Sorter<KeyLength, ValueLength>::merge(std::vector<KeyValuePair<KeyLength, V
     std::cout << "Merging runs...\n";
     uint64_t num_runs = config.num_runs();
     std::vector<SortedRun<KeyLength, ValueLength> *> current_runs;
-    for (int i=0; i<num_runs - 1; i++) {
+    for (int i=0; i<num_runs; i++) {
         uint64_t start_offset = i * config.run_size_bytes;
         auto run = new SortedRun<KeyLength, ValueLength>(
             config.merge_read_chunk_size, intermediate_fd, start_offset, config.run_size_bytes
@@ -128,7 +134,7 @@ void Sorter<KeyLength, ValueLength>::merge(std::vector<KeyValuePair<KeyLength, V
         current_runs.push_back(run);
     }
     // Last run is read from memory, first `num_runs - 1` runs are read from the disk
-    current_runs.push_back(new SortedRun<KeyLength, ValueLength>(config.run_size_bytes, &last_run));
+    // current_runs.push_back(new SortedRun<KeyLength, ValueLength>(config.run_size_bytes, &last_run));
     void *write_buffer; 
     int ret = posix_memalign(&write_buffer, 4096, config.merge_write_chunk_size);
     uint64_t write_buffer_offset = 0;

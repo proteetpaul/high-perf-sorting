@@ -62,10 +62,6 @@ def verify_sorting(output_file, key_size, value_size):
                     return False
                 
                 prev_record = current_record
-                
-                # Progress indicator for large files
-                if record_count % 100000 == 0:
-                    print(f"Processed {record_count} records...")
     
     except IOError as e:
         print(f"Error reading file: {e}")

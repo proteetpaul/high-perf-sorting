@@ -54,8 +54,11 @@ public:
         }
         if (!remaining_in_mem) {
             // read next chunk from disk
-            int ret = pread(fd, buffer, read_chunk_size_bytes, current_file_offset);
-            remaining_in_mem = read_chunk_size_bytes / sizeof(KeyValuePair<KeyLength, ValueLength>);
+            uint64_t remaining_bytes_to_read = (total_elements - processed) * sizeof(KeyValuePair<KeyLength, ValueLength>);
+            uint64_t bytes_to_read = std::min(read_chunk_size_bytes, remaining_bytes_to_read);
+            int ret = pread(fd, buffer, bytes_to_read, current_file_offset);
+            current_file_offset += bytes_to_read;
+            remaining_in_mem = bytes_to_read / sizeof(KeyValuePair<KeyLength, ValueLength>);
         }
         uint64_t buffer_offset = read_chunk_size_bytes - remaining_in_mem * sizeof(KeyValuePair<KeyLength, ValueLength>);
         char *buffer_ptr = (char*)buffer + buffer_offset;
