@@ -8,6 +8,7 @@ MEMORY_SIZE="100M"
 READ_CHUNK_SIZE="100M"
 MERGE_READ_CHUNK_SIZE="1M"
 MERGE_WRITE_CHUNK_SIZE="1M"
+NUM_THREADS=1
 WORKING_DIR=$(realpath ".")
 ENABLE_PROFILE=false
 PROFILE_OUTPUT="perf.data"
@@ -23,6 +24,7 @@ show_usage() {
     echo "  --memory-size SIZE         Memory size (default: 100M)"
     echo "  --merge-read-chunk-size SIZE  Merge read chunk size (default: 1M)"
     echo "  --merge-write-chunk-size SIZE Merge write chunk size (default: 1M)"
+    echo "  --num-threads COUNT        Number of threads for parallel sorting (default: 1)"
     echo "  --working-dir DIR          Working directory (default: .)"
     echo "  --profile                  Enable perf profiling"
     echo "  --profile-output FILE      Perf output file (default: perf.data)"
@@ -63,6 +65,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --merge-write-chunk-size)
             MERGE_WRITE_CHUNK_SIZE="$2"
+            shift 2
+            ;;
+        --num-threads)
+            NUM_THREADS="$2"
             shift 2
             ;;
         --working-dir)
@@ -141,7 +147,7 @@ fi
 CMD_ARGS="--file-size $FILE_SIZE --key-size $KEY_SIZE --value-size $VALUE_SIZE"
 CMD_ARGS="$CMD_ARGS --memory-size $MEMORY_SIZE"
 CMD_ARGS="$CMD_ARGS --merge-read-chunk-size $MERGE_READ_CHUNK_SIZE --merge-write-chunk-size $MERGE_WRITE_CHUNK_SIZE"
-CMD_ARGS="$CMD_ARGS --working-dir $WORKING_DIR"
+CMD_ARGS="$CMD_ARGS --num-threads $NUM_THREADS --working-dir $WORKING_DIR"
 
 echo "Running sorter with parameters:"
 echo "  File size: $FILE_SIZE"
@@ -151,6 +157,7 @@ echo "  Memory size: $MEMORY_SIZE"
 echo "  Read chunk size: $READ_CHUNK_SIZE"
 echo "  Merge read chunk size: $MERGE_READ_CHUNK_SIZE"
 echo "  Merge write chunk size: $MERGE_WRITE_CHUNK_SIZE"
+echo "  Number of threads: $NUM_THREADS"
 echo "  Working directory: $WORKING_DIR"
 echo ""
 

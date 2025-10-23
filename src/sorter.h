@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
-#include <new>
 #include <string>
 #include <vector>
 #include <cstdlib>
@@ -15,8 +14,15 @@
 #include "key_index_pair.h"
 #include "sorted_run.h"
 #include "config.h"
+#define _REENTRANT
 #include "ips4o.hpp"
 
+struct TimingInfo {
+    float intermediate_write;
+    float output_write;
+    float merge_read;
+    float input_read;
+};
 
 template <uint32_t KeyLength, uint32_t ValueLength>
 class Sorter {
@@ -26,6 +32,7 @@ class Sorter {
     int write_fd; // File to which sorted records are written
     int intermediate_fd; // File to store sorted runs
 
+    TimingInfo timing_info;
     uint64_t write_offset;
 
     std::vector<KeyValuePair<KeyLength, ValueLength>> read_input_chunk(uint64_t chunk_id);
@@ -41,6 +48,7 @@ class Sorter {
 public:
     Sorter(Config &&config) {
         this->config = std::move(config);
+        timing_info = {0, 0, 0, 0};
         read_fd = -1;
         write_fd = -1;
         intermediate_fd = -1;
@@ -48,11 +56,22 @@ public:
     }
 
     void sort();
+
+    void print_timing_stats() {
+        printf("Read input: %0.2f ms\n", timing_info.input_read);
+        printf("Read merge phase: %0.2f ms\n", timing_info.merge_read);
+        printf("Write sorted runs: %0.2f ms\n", timing_info.intermediate_write);
+        printf("Write output: %0.2f ms\n", timing_info.output_write);
+    }
 };
 
 template <uint32_t KeyLength, uint32_t ValueLength>
 void Sorter<KeyLength, ValueLength>::in_place_sort(std::vector<KeyValuePair<KeyLength, ValueLength>> &vec) {
-    ips4o::sort(vec.begin(), vec.end(), std::less<KeyValuePair<KeyLength, ValueLength>>{});
+    // if (config.num_threads == 1) {
+    //     ips4o::sort(vec.begin(), vec.end(), std::less<KeyValuePair<KeyLength, ValueLength>>{});
+    // } else {
+    ips4o::parallel::sort(vec.begin(), vec.end(), std::less<KeyValuePair<KeyLength, ValueLength>>{}, config.num_threads);
+    // }
 }
 
 template <uint32_t KeyLength, uint32_t ValueLength>
@@ -77,7 +96,11 @@ void Sorter<KeyLength, ValueLength>::sort() {
     double total_sort_time = 0.0;
 
     for (int i=0; i<num_runs; i++) {
+        auto start = std::chrono::high_resolution_clock::now();
         auto v = read_input_chunk(i);
+        auto end = std::chrono::high_resolution_clock::now();
+        timing_info.input_read += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
+        
         auto sort_start = std::chrono::high_resolution_clock::now();
         in_place_sort(v);
         auto sort_end = std::chrono::high_resolution_clock::now();
@@ -117,8 +140,13 @@ std::vector<KeyValuePair<KeyLength, ValueLength>> Sorter<KeyLength, ValueLength>
 template <uint32_t KeyLength, uint32_t ValueLength>
 void Sorter<KeyLength, ValueLength>::write_intermediate_buffer_to_disk(std::vector<KeyValuePair<KeyLength, ValueLength>> &vec, uint64_t chunk_idx) {
     uint64_t output_chunk_size = vec.size() * sizeof(KeyValuePair<KeyLength, ValueLength>);
+    auto start = std::chrono::high_resolution_clock::now();
+
     auto ret = pwrite(intermediate_fd, vec.data(), output_chunk_size, 
         chunk_idx * output_chunk_size);
+    auto end = std::chrono::high_resolution_clock::now();
+
+    timing_info.intermediate_write += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
 }
 
 template <uint32_t KeyLength, uint32_t ValueLength>
@@ -143,11 +171,14 @@ void Sorter<KeyLength, ValueLength>::merge(std::vector<KeyValuePair<KeyLength, V
         KeyValuePair<KeyLength, ValueLength> smallest = current_runs[0]->get_next();
         uint32_t smallest_run_idx = 0;
         for (uint32_t i=1; i<current_runs.size(); i++) {
+            auto start = std::chrono::high_resolution_clock::now();
             auto next = current_runs[i]->get_next();
             if (next < smallest) {
                 smallest = next;
                 smallest_run_idx = i;
             }
+            auto end = std::chrono::high_resolution_clock::now();
+            timing_info.merge_read += std::chrono::duration_cast<std::chrono::microseconds>(end-start).count() / 1000.0;
         }
         current_runs[smallest_run_idx]->next();
         if (!current_runs[smallest_run_idx]->has_next()) {
@@ -164,12 +195,17 @@ void Sorter<KeyLength, ValueLength>::merge(std::vector<KeyValuePair<KeyLength, V
         }
     }
     if (write_buffer_offset > 0) {
+        auto start = std::chrono::high_resolution_clock::now();
         write_output_chunk(write_buffer, write_buffer_offset);
     }
 }
 
 template <uint32_t KeyLength, uint32_t ValueLength>
 void Sorter<KeyLength, ValueLength>::write_output_chunk(void *buffer, uint64_t length) {
+    auto start = std::chrono::high_resolution_clock::now();
     int res = pwrite64(write_fd, buffer, length, write_offset);
+    auto end = std::chrono::high_resolution_clock::now();
+
+    timing_info.output_write += std::chrono::duration_cast<std::chrono::microseconds>(end-start).count() / 1000.0;
     write_offset += length;
 }

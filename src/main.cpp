@@ -16,6 +16,7 @@ struct ParsedArgs {
     size_t memory_size;
     size_t merge_input_chunk_size;
     size_t merge_output_chunk_size;
+    uint32_t num_threads;
 };
 
 size_t parseSizeString(const std::string& sizeStr) {
@@ -101,6 +102,7 @@ void printHelp(const char* program_name) {
     std::cout << "  --read-chunk-size <size>         Read chunk size with unit (default: 100M)\n";
     std::cout << "  --merge-read-chunk-size <size>   Merge read chunk size with unit (default: 1M)\n";
     std::cout << "  --merge-write-chunk-size <size>  Merge write chunk size with unit (default: 1M)\n";
+    std::cout << "  --num-threads <count>            Number of threads for parallel sorting (default: 1)\n";
     std::cout << "  --help, -h                       Show this help message\n";
     std::cout << "\nSize units: B (bytes), K (KB), M (MB), G (GB)\n";
     std::cout << "Examples: 1M, 512K, 2G, 1024B\n";
@@ -115,6 +117,7 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
     args.memory_size = parseSizeString("100M");  // 100MB default
     args.merge_input_chunk_size = parseSizeString("1M");  // 1MB default
     args.merge_output_chunk_size = parseSizeString("1M");  // 1MB default
+    args.num_threads = 1;  // 1 thread default
     
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -141,6 +144,9 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
             }
             else if (arg == "--merge-write-chunk-size" && i + 1 < argc) {
                 args.merge_output_chunk_size = parseSizeString(argv[++i]);
+            }
+            else if (arg == "--num-threads" && i + 1 < argc) {
+                args.num_threads = std::stoul(argv[++i]);
             }
             else if (arg == "--help" || arg == "-h") {
                 printHelp(argv[0]);
@@ -174,7 +180,7 @@ int main(int argc, char* argv[]) {
     
     // Create Config object and set values
     Config config;
-    config.num_threads = 1;  // Default to single thread
+    config.num_threads = args.num_threads;
     config.run_size_bytes = args.memory_size;
     config.file_size_bytes = args.input_bytes;
     config.merge_read_chunk_size = args.merge_input_chunk_size;
@@ -202,13 +208,16 @@ int main(int argc, char* argv[]) {
         std::cout << "calling sort...\n";
         Sorter<8, 8> sorter(std::move(config));
         sorter.sort();
+        sorter.print_timing_stats();
     } 
     else if (args.key_size == 8 && args.value_size == 24) {
         Sorter<8, 24> sorter(std::move(config));
         sorter.sort();
+        sorter.print_timing_stats();
     } else if (args.key_size == 8 && args.value_size == 56) {
         Sorter<8, 56> sorter(std::move(config));
         sorter.sort();
+        sorter.print_timing_stats();
     } 
     else {
         throw std::runtime_error("Not all (key size, value size) combinations allowed");
