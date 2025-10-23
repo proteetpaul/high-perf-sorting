@@ -109,7 +109,6 @@ if [ ! -d "$WORKING_DIR" ]; then
 fi
 
 cd $BUILD_DIR
-cmake ..
 cmake --build .
 
 if [ $? -ne 0 ]; then
