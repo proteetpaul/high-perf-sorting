@@ -3,6 +3,8 @@
 #include <string>
 
 struct Config {
+    static constexpr uint32_t BLOCK_SIZE_ALIGN = 4096;
+
     uint32_t num_threads;
 
     uint64_t run_size_bytes;        
@@ -17,7 +19,7 @@ struct Config {
 
     std::string output_file;
 
-    std::string intermediate_file;
+    std::string intermediate_file_prefix;
 
     inline uint64_t num_runs() {
         return (file_size_bytes + run_size_bytes - 1) / run_size_bytes;

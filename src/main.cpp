@@ -14,8 +14,6 @@ struct ParsedArgs {
     size_t key_size;
     size_t value_size;
     size_t memory_size;
-    size_t merge_input_chunk_size;
-    size_t merge_output_chunk_size;
     uint32_t num_threads;
 };
 
@@ -100,8 +98,6 @@ void printHelp(const char* program_name) {
     std::cout << "  --value-size <size>              Value size in bytes (default: 90)\n";
     std::cout << "  --memory-size <size>             Memory size with unit (default: 100M)\n";
     std::cout << "  --read-chunk-size <size>         Read chunk size with unit (default: 100M)\n";
-    std::cout << "  --merge-read-chunk-size <size>   Merge read chunk size with unit (default: 1M)\n";
-    std::cout << "  --merge-write-chunk-size <size>  Merge write chunk size with unit (default: 1M)\n";
     std::cout << "  --num-threads <count>            Number of threads for parallel sorting (default: 1)\n";
     std::cout << "  --help, -h                       Show this help message\n";
     std::cout << "\nSize units: B (bytes), K (KB), M (MB), G (GB)\n";
@@ -115,8 +111,6 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
     args.key_size = 10;
     args.value_size = 90;
     args.memory_size = parseSizeString("100M");  // 100MB default
-    args.merge_input_chunk_size = parseSizeString("1M");  // 1MB default
-    args.merge_output_chunk_size = parseSizeString("1M");  // 1MB default
     args.num_threads = 1;  // 1 thread default
     
     // Parse command line arguments
@@ -138,12 +132,6 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
             }
             else if (arg == "--memory-size" && i + 1 < argc) {
                 args.memory_size = parseSizeString(argv[++i]);
-            }
-            else if (arg == "--merge-read-chunk-size" && i + 1 < argc) {
-                args.merge_input_chunk_size = parseSizeString(argv[++i]);
-            }
-            else if (arg == "--merge-write-chunk-size" && i + 1 < argc) {
-                args.merge_output_chunk_size = parseSizeString(argv[++i]);
             }
             else if (arg == "--num-threads" && i + 1 < argc) {
                 args.num_threads = std::stoul(argv[++i]);
@@ -183,24 +171,20 @@ int main(int argc, char* argv[]) {
     config.num_threads = args.num_threads;
     config.run_size_bytes = args.memory_size;
     config.file_size_bytes = args.input_bytes;
-    config.merge_read_chunk_size = args.merge_input_chunk_size;
-    config.merge_write_chunk_size = args.merge_output_chunk_size;
     // Create human-friendly file names with size information
     std::string file_size_str = formatFileSize(args.input_bytes);
     config.input_file = args.working_dir + "/input-" + file_size_str + ".dat";
     config.output_file = args.working_dir + "/output-" + file_size_str + ".dat";
-    config.intermediate_file = args.working_dir + "/intermediate-" + file_size_str + ".dat";
+    config.intermediate_file_prefix = args.working_dir + "/intermediate-" + file_size_str;
     
     // Print parsed arguments for verification
     std::cout << "Config object values:\n";
     std::cout << "  Number of threads: " << config.num_threads << std::endl;
     std::cout << "  Run size bytes: " << config.run_size_bytes << std::endl;
     std::cout << "  File size bytes: " << config.file_size_bytes << std::endl;
-    std::cout << "  Merge read chunk size: " << config.merge_read_chunk_size << std::endl;
-    std::cout << "  Merge write chunk size: " << config.merge_write_chunk_size << std::endl;
     std::cout << "  Input file: " << config.input_file << std::endl;
     std::cout << "  Output file: " << config.output_file << std::endl;
-    std::cout << "  Intermediate file: " << config.intermediate_file << std::endl;
+    std::cout << "  Intermediate file: " << config.intermediate_file_prefix << std::endl;
     std::cout << "  Number of runs: " << config.num_runs() << std::endl;
     
     // TODO: Use config object with your sorter implementation
