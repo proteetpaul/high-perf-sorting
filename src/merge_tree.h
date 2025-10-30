@@ -1,8 +1,10 @@
 #pragma once
-#include "sorted_run.h"
+#include "reader.h"
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 /**
  * Struct representing a node in a tournament tree
@@ -21,11 +23,14 @@ struct MergeTreeNode {
 template<typename RecordType>
 class MergeTree {
 public:
-    MergeTree(std::vector<std::shared_ptr<SortedRunReader<RecordType>>> &inputs): inputs(inputs) {
+    MergeTree(std::vector<std::shared_ptr<SortedRunReader>> &inputs): inputs(inputs) {
         initialize();
     }
 
     RecordType pop() {
+        // if (inputs[top_node.index]->get_state() == ReaderState::WaitingForIO) {
+        //     return std::nullopt;
+        // }
         auto prev_top_node = std::move(top_node);
         leaf_to_root_pass(prev_top_node.index);
         return prev_top_node.record;
@@ -39,7 +44,7 @@ private:
     std::vector<MergeTreeNode<RecordType>> tournament_tree;
 
     // Build the tournament tree from the inputs
-    std::vector<std::shared_ptr<SortedRunReader<RecordType>>> inputs;
+    std::vector<std::shared_ptr<SortedRunReader>> inputs;
 
     void initialize() {
         size_t input_size = inputs.size();
@@ -65,7 +70,7 @@ private:
             // Called from a leaf node, return a record from the corresponding sorted run
             uint32_t run_idx = i-size;
             if (run_idx < inputs.size()) {
-                return std::make_pair<>(inputs[run_idx]->next(), run_idx);
+                return std::make_pair<>(RecordType::from_ptr(inputs[run_idx]->next()), run_idx);
             } else {
                 return std::make_pair<>(RecordType::inf(), run_idx);
             }
@@ -100,7 +105,8 @@ private:
         * For a leaf node i, its parent will be (i-1)/2
         */
         uint32_t idx = (tournament_tree.size() + run_idx - 1)/2;
-        auto new_record = inputs[run_idx]->next();
+        RecordType new_record = inputs[run_idx]->has_next() ?
+            RecordType::from_ptr(inputs[run_idx]->next()): RecordType::inf();
         MergeTreeNode<RecordType> cur_node {new_record, run_idx};
         while (true) {
             /**

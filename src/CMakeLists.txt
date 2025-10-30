@@ -16,7 +16,8 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Add executable
-add_executable(sorter main.cpp)
+add_executable(sorter main.cpp io_backend.cpp reader.cpp)
+find_package(TBB REQUIRED)
 
 # Set compile options for the target
 target_compile_options(sorter PRIVATE -O3)
@@ -24,4 +25,4 @@ target_compile_options(sorter PRIVATE -O3)
 # Enable additional optimizations
 # target_compile_options(sorter PRIVATE -march=native -mtune=native)
 
-target_link_libraries(sorter PRIVATE ips4o)
+target_link_libraries(sorter PRIVATE ips4o TBB::tbb uring pthread)

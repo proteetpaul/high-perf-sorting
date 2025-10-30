@@ -1,5 +1,11 @@
 #pragma once
 
+#include "io_backend.h"
+#include "key_index_pair.h"
+#include "reader.h"
+#include "config.h"
+#include "merge_tree.h"
+
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -13,10 +19,6 @@
 #include <chrono>
 #include <iomanip>
 
-#include "key_index_pair.h"
-#include "sorted_run.h"
-#include "config.h"
-#include "merge_tree.h"
 #define _REENTRANT
 #include "ips4o.hpp"
 
@@ -30,8 +32,12 @@ struct TimingInfo {
 
 template <uint32_t KeyLength, uint32_t ValueLength>
 class Sorter {
+    using RecordType = KeyValuePair<KeyLength, ValueLength>;
+
     static constexpr uint32_t ELEM_SIZE = sizeof(KeyValuePair<KeyLength, ValueLength>);
     Config config;
+
+    std::shared_ptr<UringHandler> handler;
 
     int read_fd; // File from which input records are read
     int write_fd; // File to which sorted records are written
@@ -56,6 +62,7 @@ public:
         read_fd = -1;
         write_fd = -1;
         output_file_offset = 0ll;
+        handler = std::make_shared<UringHandler>();
     }
 
     void sort();
@@ -146,17 +153,24 @@ SortedRun Sorter<KeyLength, ValueLength>::create_disk_run(std::vector<KeyValuePa
 
 template <uint32_t KeyLength, uint32_t ValueLength>
 void Sorter<KeyLength, ValueLength>::merge(std::vector<SortedRun> &sorted_runs) {
-    using RecordType = KeyValuePair<KeyLength, ValueLength>;
-    using ReaderType = SortedRunReader<RecordType>;
-
     printf("Starting merge step...\n");
     auto start = std::chrono::high_resolution_clock::now();
 
     uint64_t num_runs = config.num_runs();
-    std::vector<std::shared_ptr<ReaderType>> readers;
-    for (auto& run: sorted_runs) {
-        readers.push_back(std::make_shared<ReaderType>(config.merge_read_chunk_size, run));
+    std::vector<std::shared_ptr<SortedRunReader>> readers;
+    
+    for (int i=0; i<sorted_runs.size(); i++) {
+        std::shared_ptr<SortedRunReader> reader = std::make_shared<SortedRunReader>(config.merge_read_chunk_size, sorted_runs[i], i, handler);
+        readers.push_back(reader);
     }
+
+    // for (int i=0; i<num_runs; i++) {
+    //     while (readers[i]->get_state() != ReaderState::Ready) {
+    //         handler->poll_for_completions(true);
+    //     }
+    // }
+    printf("All readers ready...\n");
+
     void *write_buffer; 
     int ret = posix_memalign(&write_buffer, 4096, config.merge_write_chunk_size);
     assert(ret == 0);
@@ -165,10 +179,18 @@ void Sorter<KeyLength, ValueLength>::merge(std::vector<SortedRun> &sorted_runs) 
 
     MergeTree<RecordType> merge_tree {readers};
     auto inf_record = RecordType::inf();
+    bool complete = false;
+    
     while (true) {
+        uint32_t batch_size = 16;
         auto top_record = merge_tree.pop();
+        // if (!top_record.has_value()) {
+        //     // wait for IO by processing completions
+        //     break;
+        // }
         if (top_record == inf_record) {
             // Merge is complete when the topmost record is invalid
+            complete = true;
             break;
         }
         std::memcpy(reinterpret_cast<uint8_t*>(write_buffer) + write_buffer_offset, 
@@ -178,6 +200,8 @@ void Sorter<KeyLength, ValueLength>::merge(std::vector<SortedRun> &sorted_runs) 
             write_output_chunk(write_buffer, config.merge_write_chunk_size);
             write_buffer_offset = 0ll;
         }
+        // process completions at the end of the loop
+        // handler->poll_for_completions(false);
     }
 
     if (write_buffer_offset > 0) {
