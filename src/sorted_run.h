@@ -4,7 +4,11 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
+#include <deque>
 #include <unistd.h>
+#include <vector>
+
+#include "io_uring.h"
 
 #include "key_index_pair.h"
 
@@ -13,9 +17,14 @@ struct SortedRun {
     uint64_t num_elements;
 };
 
-template <uint32_t KeyLength, uint32_t ValueLength>
+enum ReaderState {
+    WaitingForIO,
+    Ready,
+};
+
+template <typename RecordType>
 class SortedRunReader {
-    static constexpr uint32_t ELEM_SIZE = sizeof(KeyValuePair<KeyLength, ValueLength>);
+    static constexpr uint32_t ELEM_SIZE = sizeof(RecordType);
 
     SortedRun run;
 
@@ -28,7 +37,27 @@ class SortedRunReader {
     uint64_t buffer_size;           // Size of reads from disk
 
     uint64_t buffer_offset;
+
+    uint64_t file_offset_for_next_read;
+
+    std::vector<void*> all_buffers;
+
+    std::deque<uint32_t> ready_for_io;
+
+    std::vector<uint32_t> chunk_to_buffer_idx_mapping;
+
+    uint32_t current_chunk;
+
+    ReaderState state;
 public:
+    IoTask* get_next_io_task() {
+
+    }
+
+    void io_complete(IoTask *task) {
+
+    }
+
     SortedRunReader(uint64_t read_chunk_size_bytes, SortedRun run)
             : buffer_size(read_chunk_size_bytes), run(run) {
         processed = 0;
@@ -42,7 +71,10 @@ public:
         return processed < run.num_elements;
     }
 
-    KeyValuePair<KeyLength, ValueLength> next() {
+    RecordType *next() {
+        if (processed == run.num_elements) {
+            return RecordType::inf();
+        }
         if (buffer_offset + ELEM_SIZE > buffer_size) {
             // read next chunk from disk
             uint64_t remaining_bytes_to_read = (run.num_elements - processed) * ELEM_SIZE;
@@ -53,8 +85,9 @@ public:
             buffer_offset = 0ll;
         }
         char *buffer_ptr = (char*)buffer + buffer_offset;
-        KeyValuePair<KeyLength, ValueLength> k {buffer_ptr, reinterpret_cast<char*>(buffer_ptr + KeyLength)};
-        return k;
+        processed++;
+        buffer_offset += ELEM_SIZE;
+        return reinterpret_cast<RecordType*>(buffer);
     }
 
     void advance() {
