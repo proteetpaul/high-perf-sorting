@@ -181,8 +181,11 @@ void Sorter<KeyLength, ValueLength>::merge(std::vector<SortedRun> &sorted_runs) 
     }
 
     if (write_buffer_offset > 0) {
-        auto start = std::chrono::high_resolution_clock::now();
         write_output_chunk(write_buffer, write_buffer_offset);
+    }
+
+    for (auto reader: readers) {
+        timing_info.merge_read += reader->get_file_read_time()/1000.0f;
     }
 
     auto end = std::chrono::high_resolution_clock::now();

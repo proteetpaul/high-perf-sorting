@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
+#include <chrono>
 #include <deque>
 #include <unistd.h>
 #include <vector>
@@ -36,6 +37,8 @@ class SortedRunReader {
 
     uint64_t buffer_offset;
 
+    uint64_t read_time;
+
     // std::vector<void*> all_buffers;
 
     // std::deque<uint32_t> ready_for_io;
@@ -61,6 +64,7 @@ public:
         processed = 0;
         buffer_offset = read_chunk_size_bytes;
         file_offset = 0;
+        read_time = 0;
         int ret = posix_memalign(&buffer, 4096, buffer_size);
         assert(ret == 0);
     }
@@ -77,7 +81,10 @@ public:
             // read next chunk from disk
             uint64_t remaining_bytes_to_read = (run.num_elements - processed) * ELEM_SIZE;
             uint64_t bytes_to_read = std::min(buffer_size, remaining_bytes_to_read);
+            auto start = std::chrono::high_resolution_clock::now();
             int ret = pread64(run.fd, buffer, bytes_to_read, file_offset);
+            auto end = std::chrono::high_resolution_clock::now();
+            read_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
             assert(ret == bytes_to_read);
             file_offset += bytes_to_read;
             buffer_offset = 0ll;
@@ -95,5 +102,9 @@ public:
 
     ~SortedRunReader() {
         free(buffer);
+    }
+
+    uint64_t get_file_read_time() {
+        return read_time;
     }
 };
