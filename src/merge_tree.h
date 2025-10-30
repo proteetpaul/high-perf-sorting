@@ -100,7 +100,6 @@ private:
         * For a leaf node i, its parent will be (i-1)/2
         */
         uint32_t idx = (tournament_tree.size() + run_idx - 1)/2;
-        inputs[run_idx]->advance();
         auto new_record = inputs[run_idx]->next();
         MergeTreeNode<RecordType> cur_node {new_record, run_idx};
         while (true) {

@@ -147,14 +147,15 @@ SortedRun Sorter<KeyLength, ValueLength>::create_disk_run(std::vector<KeyValuePa
 template <uint32_t KeyLength, uint32_t ValueLength>
 void Sorter<KeyLength, ValueLength>::merge(std::vector<SortedRun> &sorted_runs) {
     using RecordType = KeyValuePair<KeyLength, ValueLength>;
+    using ReaderType = SortedRunReader<RecordType>;
+
     printf("Starting merge step...\n");
     auto start = std::chrono::high_resolution_clock::now();
 
     uint64_t num_runs = config.num_runs();
-    std::vector<std::shared_ptr<SortedRunReader<RecordType>>> readers;
+    std::vector<std::shared_ptr<ReaderType>> readers;
     for (auto& run: sorted_runs) {
-        auto reader = new SortedRunReader<RecordType>(config.merge_read_chunk_size, run);
-        readers.push_back(std::make_shared<>(reader));
+        readers.push_back(std::make_shared<ReaderType>(config.merge_read_chunk_size, run));
     }
     void *write_buffer; 
     int ret = posix_memalign(&write_buffer, 4096, config.merge_write_chunk_size);
@@ -171,7 +172,7 @@ void Sorter<KeyLength, ValueLength>::merge(std::vector<SortedRun> &sorted_runs) 
             break;
         }
         std::memcpy(reinterpret_cast<uint8_t*>(write_buffer) + write_buffer_offset, 
-            reinterpret_cast<uint8_t*>(top_record), ELEM_SIZE);
+            reinterpret_cast<uint8_t*>(&top_record), ELEM_SIZE);
         write_buffer_offset += ELEM_SIZE;
         if (write_buffer_offset == config.merge_write_chunk_size) {
             write_output_chunk(write_buffer, config.merge_write_chunk_size);
@@ -179,34 +180,6 @@ void Sorter<KeyLength, ValueLength>::merge(std::vector<SortedRun> &sorted_runs) 
         }
     }
 
-    // while (readers.size()) {
-    //     auto start = std::chrono::high_resolution_clock::now();
-    //     KeyValuePair<KeyLength, ValueLength> *smallest = readers[0]->next();
-    //     uint32_t smallest_run_idx = 0;
-    //     for (uint32_t i=1; i<readers.size(); i++) {
-    //         KeyValuePair<KeyLength, ValueLength> *next = readers[i]->next();
-    //         if (*next < *smallest) {
-    //             smallest = next;
-    //             smallest_run_idx = i;
-    //         }
-    //     }
-        
-    //     auto end = std::chrono::high_resolution_clock::now();
-    //     timing_info.merge_read += std::chrono::duration_cast<std::chrono::microseconds>(end-start).count() / 1000.0;
-        
-    //     readers[smallest_run_idx]->advance();
-    //     if (!readers[smallest_run_idx]->has_next()) {
-    //         readers.erase(readers.begin() + smallest_run_idx);
-    //     }
-    //     std::memcpy(reinterpret_cast<uint8_t*>(write_buffer) + write_buffer_offset, 
-    //         reinterpret_cast<uint8_t*>(smallest), ELEM_SIZE);
-
-    //     write_buffer_offset += ELEM_SIZE;
-    //     if (write_buffer_offset == config.merge_write_chunk_size) {
-    //         write_output_chunk(write_buffer, config.merge_write_chunk_size);
-    //         write_buffer_offset = 0ll;
-    //     }
-    // }
     if (write_buffer_offset > 0) {
         auto start = std::chrono::high_resolution_clock::now();
         write_output_chunk(write_buffer, write_buffer_offset);

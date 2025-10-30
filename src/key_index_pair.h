@@ -21,6 +21,13 @@ struct KeyValuePair {
         return k;
     }
 
+    static KeyValuePair<KeyLength, ValueLength> from_ptr(void *ptr) {
+        KeyValuePair<KeyLength, ValueLength> k;
+        std::memcpy(k.value, reinterpret_cast<char*>(ptr) + KeyLength, ValueLength);
+        std::memcpy(k.key, ptr, KeyLength);
+        return k;
+    }
+
     KeyValuePair(char *key, char *value) {
         std::memcpy(this->value, value, ValueLength);
         std::memcpy(this->key, key, KeyLength);

@@ -8,9 +8,7 @@
 #include <unistd.h>
 #include <vector>
 
-#include "io_uring.h"
-
-#include "key_index_pair.h"
+// #include "io_uring.h"
 
 struct SortedRun {
     int fd;
@@ -38,25 +36,25 @@ class SortedRunReader {
 
     uint64_t buffer_offset;
 
-    uint64_t file_offset_for_next_read;
+    // std::vector<void*> all_buffers;
 
-    std::vector<void*> all_buffers;
+    // std::deque<uint32_t> ready_for_io;
 
-    std::deque<uint32_t> ready_for_io;
+    // std::vector<uint32_t> chunk_to_buffer_idx_mapping;
 
-    std::vector<uint32_t> chunk_to_buffer_idx_mapping;
+    // uint32_t current_chunk;
 
-    uint32_t current_chunk;
+    // uint32_t next_chunk;
 
-    ReaderState state;
+    // ReaderState state;
 public:
-    IoTask* get_next_io_task() {
+    // IoTask* get_next_io_task() {
 
-    }
+    // }
 
-    void io_complete(IoTask *task) {
+    // void io_complete(IoTask *task) {
 
-    }
+    // }
 
     SortedRunReader(uint64_t read_chunk_size_bytes, SortedRun run)
             : buffer_size(read_chunk_size_bytes), run(run) {
@@ -71,7 +69,7 @@ public:
         return processed < run.num_elements;
     }
 
-    RecordType *next() {
+    RecordType next() {
         if (processed == run.num_elements) {
             return RecordType::inf();
         }
@@ -87,7 +85,7 @@ public:
         char *buffer_ptr = (char*)buffer + buffer_offset;
         processed++;
         buffer_offset += ELEM_SIZE;
-        return reinterpret_cast<RecordType*>(buffer);
+        return RecordType::from_ptr(buffer);
     }
 
     void advance() {
