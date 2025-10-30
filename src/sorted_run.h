@@ -85,7 +85,7 @@ public:
         char *buffer_ptr = (char*)buffer + buffer_offset;
         processed++;
         buffer_offset += ELEM_SIZE;
-        return RecordType::from_ptr(buffer);
+        return RecordType::from_ptr(buffer_ptr);
     }
 
     void advance() {
