@@ -28,16 +28,68 @@ struct KeyValuePair {
         return k;
     }
 
-    KeyValuePair(char *key, char *value) {
-        std::memcpy(this->value, value, ValueLength);
-        std::memcpy(this->key, key, KeyLength);
-    }
-
     bool operator < (const KeyValuePair<KeyLength, ValueLength> &other) const {
         return memcmp(this->key, other.key, KeyLength) < 0;
     }
 
     bool operator == (const KeyValuePair<KeyLength, ValueLength> &other) const {
         return memcmp(this->key, other.key, KeyLength) == 0;
+    }
+};
+
+
+template <uint32_t ValueLength>
+struct KeyValuePair<8, ValueLength> {
+    uint64_t key;
+    char value[ValueLength];
+
+    KeyValuePair() {}
+
+    static KeyValuePair<8, ValueLength> inf() {
+        KeyValuePair<8, ValueLength> k;
+        k.key = uint64_t(-1);
+        return k;
+    }
+
+    static KeyValuePair<8, ValueLength> from_ptr(void *ptr) {
+        KeyValuePair<8, ValueLength> k;
+        std::memcpy(k.value, reinterpret_cast<char*>(ptr) + sizeof(uint64_t), ValueLength);
+        k.key = *reinterpret_cast<uint64_t*>(ptr);
+        return k;
+    }
+
+    bool operator < (const KeyValuePair<8, ValueLength> &other) const {
+        return this->key < other.key;
+    }
+
+    bool operator == (const KeyValuePair<8, ValueLength> &other) const {
+        return this->key == other.key;
+    }
+};
+
+template <>
+struct KeyValuePair<8, 0> {
+    uint64_t key;
+
+    KeyValuePair() {}
+
+    static KeyValuePair<8, 0> inf() {
+        KeyValuePair<8, 0> k;
+        k.key = uint64_t(-1);
+        return k;
+    }
+
+    static KeyValuePair<8, 0> from_ptr(void *ptr) {
+        KeyValuePair<8, 0> k;
+        k.key = *reinterpret_cast<uint64_t*>(ptr);
+        return k;
+    }
+
+    bool operator < (const KeyValuePair<8, 0> &other) const {
+        return this->key < other.key;
+    }
+
+    bool operator == (const KeyValuePair<8, 0> &other) const {
+        return this->key == other.key;
     }
 };

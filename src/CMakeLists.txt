@@ -24,4 +24,4 @@ target_compile_options(sorter PRIVATE -O3)
 # Enable additional optimizations
 # target_compile_options(sorter PRIVATE -march=native -mtune=native)
 
-target_link_libraries(sorter PRIVATE ips4o)
+target_link_libraries(sorter PRIVATE ips4o atomic tbb)
