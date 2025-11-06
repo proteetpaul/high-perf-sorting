@@ -7,3 +7,4 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 add_subdirectory(src)
 add_subdirectory(ips4o)
+add_subdirectory(bench)
