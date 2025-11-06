@@ -42,7 +42,7 @@ public:
         assert(ret == 0);
         ret = posix_memalign(&input2, 4096, size_bytes);
         assert(ret == 0);
-        ret = posix_memalign(&output, 4096, size_bytes);
+        ret = posix_memalign(&output, 4096, size_bytes*2);
         assert(ret == 0);
 
         ret = pread64(fd1, input1, size_bytes, 0);
