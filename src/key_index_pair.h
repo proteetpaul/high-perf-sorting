@@ -59,7 +59,7 @@ struct KeyValuePair<8, ValueLength> {
     }
 
     bool operator < (const KeyValuePair<8, ValueLength> &other) const {
-        return this->key < other.key;
+        return  __builtin_bswap64(this->key) < __builtin_bswap64(other.key);
     }
 
     bool operator == (const KeyValuePair<8, ValueLength> &other) const {
@@ -86,7 +86,7 @@ struct KeyValuePair<8, 0> {
     }
 
     bool operator < (const KeyValuePair<8, 0> &other) const {
-        return this->key < other.key;
+        return __builtin_bswap64(this->key) < __builtin_bswap64(other.key);
     }
 
     bool operator == (const KeyValuePair<8, 0> &other) const {
