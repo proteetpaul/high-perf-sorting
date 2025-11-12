@@ -12,6 +12,9 @@
 #include <unistd.h>
 #include <chrono>
 #include <iomanip>
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
+#include <sys/syscall.h>
 
 #include "key_index_pair.h"
 #include "sorted_run.h"
@@ -28,6 +31,39 @@ struct TimingInfo {
     float sort_time;
 };
 
+struct PerfInfo {
+    std::vector<int> cache_misses_fd;
+    std::vector<int> cache_refs_fd;
+    // std::vector<int> l2_misses_fd;
+};
+
+struct read_format {
+    uint64_t value;
+    uint64_t id;
+};
+
+static int perf_event_open(struct perf_event_attr *hw_event, pid_t pid, int cpu, int group_fd, unsigned long flags){
+    int fd;
+    fd = syscall(SYS_perf_event_open, hw_event, pid, cpu, group_fd, flags);
+    if (fd == -1) {
+        fprintf(stderr, "Error creating event\n");
+        exit(EXIT_FAILURE);
+    }
+  
+    return fd;
+}
+
+void configure_event(struct perf_event_attr *pe, uint64_t config){
+    memset(pe, 0, sizeof(struct perf_event_attr));
+    pe->type = PERF_TYPE_HARDWARE;
+    pe->size = sizeof(struct perf_event_attr);
+    pe->config = config;
+    pe->read_format = PERF_FORMAT_ID;
+    pe->disabled = 1;
+    pe->exclude_kernel = 1;
+    pe->exclude_hv = 1;
+}
+
 template <uint32_t KeyLength, uint32_t ValueLength>
 class Sorter {
     static constexpr uint32_t ELEM_SIZE = sizeof(KeyValuePair<KeyLength, ValueLength>);
@@ -37,6 +73,7 @@ class Sorter {
     int write_fd; // File to which sorted records are written
 
     TimingInfo timing_info;
+    PerfInfo perf_info;
     uint64_t output_file_offset;
 
     std::vector<KeyValuePair<KeyLength, ValueLength>> read_input_chunk(uint64_t chunk_id);
@@ -48,6 +85,38 @@ class Sorter {
     void in_place_sort(std::vector<KeyValuePair<KeyLength, ValueLength>> &vec);
 
     void merge(std::vector<SortedRun> &sorted_runs);
+
+    void init_perf_counters() {
+        struct perf_event_attr pe[2];
+        configure_event(&pe[0], PERF_COUNT_HW_CACHE_MISSES);
+        configure_event(&pe[1], PERF_COUNT_HW_CACHE_REFERENCES);
+        
+        for (int i=0; i<2; i++) {
+            perf_event_attr event_attr = pe[i];
+            int fd = perf_event_open(&event_attr, 0, -1, -1, 0);
+            ioctl(fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+            ioctl(fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+
+            if (i == 0) {
+                perf_info.cache_misses_fd.push_back(fd);
+            } else {
+                perf_info.cache_refs_fd.push_back(fd);
+            }
+        }
+    }
+
+    void read_perf_counters() {
+        ioctl(perf_info.cache_misses_fd[0], PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
+        ioctl(perf_info.cache_refs_fd[0], PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
+
+        read_format cache_misses, cache_refs;
+        int ret = read(perf_info.cache_misses_fd[0], &cache_misses, sizeof(struct read_format));
+        ret = read(perf_info.cache_refs_fd[0], &cache_refs, sizeof(struct read_format));
+        printf("Cache refs: %ld\n", cache_refs.value);
+        printf("Cache misses: %ld\n", cache_misses.value);
+        float miss_ratio = 100.0f * cache_misses.value / ((float)cache_misses.value + (float)cache_refs.value);
+        printf("Cache miss ratio: %f\n", miss_ratio);
+    }
 
 public:
     Sorter(Config &&config) {
@@ -89,7 +158,9 @@ void Sorter<KeyLength, ValueLength>::sort() {
     uint64_t num_runs = config.num_runs();
     if (num_runs == 1) {
         auto v = read_input_chunk(0);
+        init_perf_counters();
         in_place_sort(v);
+        read_perf_counters();
         write_output_chunk(v.data(), config.file_size_bytes);
         return;
     }
@@ -112,6 +183,8 @@ void Sorter<KeyLength, ValueLength>::sort() {
         sorted_runs.push_back(create_disk_run(v, i));    
     }
     merge(sorted_runs);
+
+    read_perf_counters();
 }
 
 template <uint32_t KeyLength, uint32_t ValueLength>
