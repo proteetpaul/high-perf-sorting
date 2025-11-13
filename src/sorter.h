@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cassert>
+#include <sched.h>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -31,11 +32,15 @@ struct TimingInfo {
     float sort_time;
 };
 
-struct PerfInfo {
-    std::vector<int> cache_misses_fd;
-    std::vector<int> cache_refs_fd;
-    // std::vector<int> l2_misses_fd;
-};
+// struct EventInfo {
+//     int fd;
+//     int value;
+// };
+
+// struct PerfInfo {
+//     std::vector<EventInfo> cache_misses_fd;
+//     std::vector<EventInfo> cache_refs_fd;
+// };
 
 struct read_format {
     uint64_t value;
@@ -64,6 +69,50 @@ void configure_event(struct perf_event_attr *pe, uint64_t config){
     pe->exclude_hv = 1;
 }
 
+int init_perf_counter(uint64_t config) {
+    perf_event_attr pe;
+    configure_event(&pe, config);
+    EventInfo event_info;
+    int fd = perf_event_open(&pe, 0, -1, -1, 0);
+    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
+    ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
+    return fd;
+}
+
+int read_perf_counter(int fd) {
+    read_format result;
+    ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+    int ret = read(fd, &result, sizeof(struct read_format));
+    assert(ret > 0);
+    return result.value;
+}
+
+// void init_perf_counters(uint64_t config, std::vector<EventInfo> &fds) {
+//     int num_cpus = std::thread::hardware_concurrency();
+//     int group_fd = -1;
+
+//     for (int i=0; i<num_cpus; i++) {
+//         perf_event_attr pe;
+//         configure_event(&pe, config);
+//         EventInfo event_info;
+//         event_info.fd = perf_event_open(&pe, getpid(), i, -1, 0);
+//         ioctl(event_info.fd, PERF_EVENT_IOC_RESET, 0);
+//         ioctl(event_info.fd, PERF_EVENT_IOC_ENABLE, 0);
+        
+//         fds.push_back(event_info);
+//     }
+// }
+
+// void read_perf_counters(std::vector<EventInfo> &events) {
+//     printf("Per-core values:\n");
+//     for (int i=0; i<events.size(); i++ ) {
+//         read_format results;
+//         ioctl(events[i].fd, PERF_EVENT_IOC_DISABLE, 0);
+//         int ret = read(events[i].fd, &results, sizeof(struct read_format));
+//         printf("cpu: %d, events: %ld\n", i, results.value);
+//     }
+// }
+
 template <uint32_t KeyLength, uint32_t ValueLength>
 class Sorter {
     static constexpr uint32_t ELEM_SIZE = sizeof(KeyValuePair<KeyLength, ValueLength>);
@@ -73,7 +122,7 @@ class Sorter {
     int write_fd; // File to which sorted records are written
 
     TimingInfo timing_info;
-    PerfInfo perf_info;
+    // PerfInfo perf_info;
     uint64_t output_file_offset;
 
     std::vector<KeyValuePair<KeyLength, ValueLength>> read_input_chunk(uint64_t chunk_id);
@@ -86,37 +135,7 @@ class Sorter {
 
     void merge(std::vector<SortedRun> &sorted_runs);
 
-    void init_perf_counters() {
-        struct perf_event_attr pe[2];
-        configure_event(&pe[0], PERF_COUNT_HW_CACHE_MISSES);
-        configure_event(&pe[1], PERF_COUNT_HW_CACHE_REFERENCES);
-        
-        for (int i=0; i<2; i++) {
-            perf_event_attr event_attr = pe[i];
-            int fd = perf_event_open(&event_attr, 0, -1, -1, 0);
-            ioctl(fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
-            ioctl(fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
-
-            if (i == 0) {
-                perf_info.cache_misses_fd.push_back(fd);
-            } else {
-                perf_info.cache_refs_fd.push_back(fd);
-            }
-        }
-    }
-
-    void read_perf_counters() {
-        ioctl(perf_info.cache_misses_fd[0], PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
-        ioctl(perf_info.cache_refs_fd[0], PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
-
-        read_format cache_misses, cache_refs;
-        int ret = read(perf_info.cache_misses_fd[0], &cache_misses, sizeof(struct read_format));
-        ret = read(perf_info.cache_refs_fd[0], &cache_refs, sizeof(struct read_format));
-        printf("Cache refs: %ld\n", cache_refs.value);
-        printf("Cache misses: %ld\n", cache_misses.value);
-        float miss_ratio = 100.0f * cache_misses.value / ((float)cache_misses.value + (float)cache_refs.value);
-        printf("Cache miss ratio: %f\n", miss_ratio);
-    }
+    
 
 public:
     Sorter(Config &&config) {
@@ -140,8 +159,51 @@ public:
 
 template <uint32_t KeyLength, uint32_t ValueLength>
 void Sorter<KeyLength, ValueLength>::in_place_sort(std::vector<KeyValuePair<KeyLength, ValueLength>> &vec) {
+    auto sort_task = [this, &vec](uint64_t start_offset, uint64_t end_offset, int id) {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(id + 1, &cpuset);
+        pthread_t current_thread = pthread_self();
+        pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
+
+        unsigned int cpu, node;
+        {
+            getcpu(&cpu, &node);
+            std::cout << "Thread " << id << " started running on : " << cpu << "\n";
+        }
+        int miss_fd = init_perf_counter(PERF_COUNT_HW_CACHE_MISSES);
+        int ref_fd = init_perf_counter(PERF_COUNT_HW_CACHE_REFERENCES);
+
+        auto start = std::chrono::high_resolution_clock::now();
+        ips4o::parallel::sort(vec.begin() + start_offset, vec.begin() + end_offset, 
+            std::less<KeyValuePair<KeyLength, ValueLength>>{}, 1);
+        auto end = std::chrono::high_resolution_clock::now();
+        auto time_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
+        {
+            getcpu(&cpu, &node);
+            std::cout << "Thread " << id << " ended running on : " << cpu << "\n";
+        }
+        int cache_misses = read_perf_counter(miss_fd);
+        int refs = read_perf_counter(ref_fd);
+        float miss_ratio = 100.0f * cache_misses / ((float)cache_misses + (float)refs);
+        printf("Task %d took: %f ms, cache misses: %f\n", id, time_elapsed, miss_ratio);
+    };
+    uint64_t stride = (vec.size()) / config.num_threads;
+    std::vector<std::thread> tasks;
+    tasks.reserve(config.num_threads);
+
     auto start = std::chrono::high_resolution_clock::now();
-    ips4o::parallel::sort(vec.begin(), vec.end(), std::less<KeyValuePair<KeyLength, ValueLength>>{}, config.num_threads);
+    // ips4o::parallel::sort(vec.begin(), vec.end(), std::less<KeyValuePair<KeyLength, ValueLength>>{}, config.num_threads);
+    uint64_t start_offset = 0ll;
+    uint64_t end_offset = stride;
+    for (int i=0; i<config.num_threads; i++) {
+        tasks.emplace_back(sort_task, start_offset, end_offset, i);
+        start_offset += stride;
+        end_offset += stride;
+    }
+    for (int i=0; i<config.num_threads; i++) {
+        tasks[i].join();
+    }
     auto end = std::chrono::high_resolution_clock::now();
 
     timing_info.sort_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
@@ -158,9 +220,11 @@ void Sorter<KeyLength, ValueLength>::sort() {
     uint64_t num_runs = config.num_runs();
     if (num_runs == 1) {
         auto v = read_input_chunk(0);
-        init_perf_counters();
+        // init_perf_counters(PERF_COUNT_HW_CACHE_MISSES, perf_info.cache_misses_fd);
+        // init_perf_counters(PERF_COUNT_HW_CACHE_REFERENCES, perf_info.cache_refs_fd);
         in_place_sort(v);
-        read_perf_counters();
+        // read_perf_counters(perf_info.cache_misses_fd);
+        // read_perf_counters(perf_info.cache_refs_fd);
         write_output_chunk(v.data(), config.file_size_bytes);
         return;
     }
@@ -183,8 +247,6 @@ void Sorter<KeyLength, ValueLength>::sort() {
         sorted_runs.push_back(create_disk_run(v, i));    
     }
     merge(sorted_runs);
-
-    read_perf_counters();
 }
 
 template <uint32_t KeyLength, uint32_t ValueLength>

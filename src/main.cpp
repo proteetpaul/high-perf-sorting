@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <sstream>
 #include <iomanip>
+#include <pthread.h>
+#include <sched.h>
 
 #include "sorter.h"
 #include "config.h"
@@ -155,7 +157,17 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
     return 2;  // Success, continue execution
 }
 
+// Pin current thread to cpu 0
+void pin_current_thread() {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(0, &cpuset);
+    pthread_t current_thread = pthread_self();
+    pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
+}
+
 int main(int argc, char* argv[]) {
+    pin_current_thread();
     ParsedArgs args;
     int parse_result = parseArguments(argc, argv, args);
     
