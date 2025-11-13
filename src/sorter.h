@@ -72,7 +72,6 @@ void configure_event(struct perf_event_attr *pe, uint64_t config){
 int init_perf_counter(uint64_t config) {
     perf_event_attr pe;
     configure_event(&pe, config);
-    EventInfo event_info;
     int fd = perf_event_open(&pe, 0, -1, -1, 0);
     ioctl(fd, PERF_EVENT_IOC_RESET, 0);
     ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
