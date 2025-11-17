@@ -16,6 +16,7 @@
 #include <linux/perf_event.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
+#include <pthread.h>
 
 #include "key_index_pair.h"
 #include "sorted_run.h"
@@ -23,6 +24,8 @@
 #include "merge_tree.h"
 #define _REENTRANT
 #include "ips4o.hpp"
+
+#include <spdlog/spdlog.h>
 
 struct TimingInfo {
     float intermediate_write;
@@ -134,7 +137,7 @@ class Sorter {
 
     void merge(std::vector<SortedRun> &sorted_runs);
 
-    
+    void in_place_sort2(std::vector<KeyValuePair<KeyLength, ValueLength>> &vec);
 
 public:
     Sorter(Config &&config) {
@@ -157,8 +160,30 @@ public:
 };
 
 template <uint32_t KeyLength, uint32_t ValueLength>
+void Sorter<KeyLength, ValueLength>::in_place_sort2(std::vector<KeyValuePair<KeyLength, ValueLength>> &vec) {
+    int miss_fd = init_perf_counter(PERF_COUNT_HW_CACHE_MISSES);
+    int ref_fd = init_perf_counter(PERF_COUNT_HW_CACHE_REFERENCES);
+
+    auto start = std::chrono::high_resolution_clock::now();
+    ips4o::parallel::sort(vec.begin(), vec.end(), std::less<KeyValuePair<KeyLength, ValueLength>>{}, config.num_threads);
+    auto end = std::chrono::high_resolution_clock::now();
+
+    int cache_misses = read_perf_counter(miss_fd);
+    int refs = read_perf_counter(ref_fd);
+    float miss_ratio = 100.0f * cache_misses / ((float)cache_misses + (float)refs);
+    spdlog::info("Miss ratio: {}", miss_ratio);
+
+    timing_info.sort_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
+}
+
+template <uint32_t KeyLength, uint32_t ValueLength>
 void Sorter<KeyLength, ValueLength>::in_place_sort(std::vector<KeyValuePair<KeyLength, ValueLength>> &vec) {
-    auto sort_task = [this, &vec](uint64_t start_offset, uint64_t end_offset, int id) {
+    std::vector<float> cache_misses_vec(config.num_threads);
+    pthread_barrier_t barrier;
+    int s = pthread_barrier_init(&barrier, NULL, config.num_threads);
+    std::chrono::high_resolution_clock::time_point actual_start_time, actual_end_time;
+
+    auto sort_task = [this, &vec, &cache_misses_vec, &barrier, &actual_start_time, &actual_end_time](uint64_t start_offset, uint64_t end_offset, int id) {
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
         CPU_SET(id + 1, &cpuset);
@@ -168,30 +193,42 @@ void Sorter<KeyLength, ValueLength>::in_place_sort(std::vector<KeyValuePair<KeyL
         unsigned int cpu, node;
         {
             getcpu(&cpu, &node);
-            std::cout << "Thread " << id << " started running on : " << cpu << "\n";
+            spdlog::info("Thread {} started running on {} ", id, cpu);
         }
         int miss_fd = init_perf_counter(PERF_COUNT_HW_CACHE_MISSES);
         int ref_fd = init_perf_counter(PERF_COUNT_HW_CACHE_REFERENCES);
+
+        pthread_barrier_wait(&barrier);
+        
+        if (id == 0) {
+            actual_start_time = std::chrono::high_resolution_clock::now();
+        }
 
         auto start = std::chrono::high_resolution_clock::now();
         ips4o::parallel::sort(vec.begin() + start_offset, vec.begin() + end_offset, 
             std::less<KeyValuePair<KeyLength, ValueLength>>{}, 1);
         auto end = std::chrono::high_resolution_clock::now();
+
         auto time_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
+        pthread_barrier_wait(&barrier);
+        if (id == 0) {
+            actual_end_time = std::chrono::high_resolution_clock::now();
+        }
         {
             getcpu(&cpu, &node);
-            std::cout << "Thread " << id << " ended running on : " << cpu << "\n";
+            spdlog::info("Thread {} ended running on {} ", id, cpu);
         }
         int cache_misses = read_perf_counter(miss_fd);
         int refs = read_perf_counter(ref_fd);
         float miss_ratio = 100.0f * cache_misses / ((float)cache_misses + (float)refs);
-        printf("Task %d took: %f ms, cache misses: %f\n", id, time_elapsed, miss_ratio);
+        cache_misses_vec[id] = miss_ratio;
+        spdlog::info("Task {} took: {} ms", id, time_elapsed);
     };
     uint64_t stride = (vec.size()) / config.num_threads;
     std::vector<std::thread> tasks;
     tasks.reserve(config.num_threads);
 
-    auto start = std::chrono::high_resolution_clock::now();
+    // auto start = std::chrono::high_resolution_clock::now();
     // ips4o::parallel::sort(vec.begin(), vec.end(), std::less<KeyValuePair<KeyLength, ValueLength>>{}, config.num_threads);
     uint64_t start_offset = 0ll;
     uint64_t end_offset = stride;
@@ -205,7 +242,13 @@ void Sorter<KeyLength, ValueLength>::in_place_sort(std::vector<KeyValuePair<KeyL
     }
     auto end = std::chrono::high_resolution_clock::now();
 
-    timing_info.sort_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
+    float avg_cache_miss = 0.0f;
+    for (float f: cache_misses_vec) {
+        avg_cache_miss += f;
+    }
+    spdlog::info("Average cache misses: {} %", avg_cache_miss/config.num_threads);
+
+    timing_info.sort_time += std::chrono::duration_cast<std::chrono::microseconds>(actual_end_time - actual_start_time).count() / 1000.0f;
 }
 
 template <uint32_t KeyLength, uint32_t ValueLength>
@@ -242,7 +285,7 @@ void Sorter<KeyLength, ValueLength>::sort() {
 
     for (int i=0; i<num_runs; i++) {
         auto v = read_input_chunk(i);
-        in_place_sort(v);
+        in_place_sort2(v);
         sorted_runs.push_back(create_disk_run(v, i));    
     }
     merge(sorted_runs);

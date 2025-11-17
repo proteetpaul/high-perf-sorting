@@ -25,6 +25,14 @@ long get_file_size(const char *filename) {
     return file_status.st_size;
 }
 
+void pin_thread(int cpu) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu, &cpuset);
+    pthread_t current_thread = pthread_self();
+    pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
+}
+
 template<typename T>
 class MergeBenchmark {
     std::vector<std::string> paths;
@@ -53,6 +61,13 @@ public:
         return result;
     }
 
+    void write_output(Block blk) {
+        int fd = open("merge_output.dat", O_CREAT | O_RDWR | O_DIRECT | O_TRUNC, 0644);
+        size_t ret = pwrite64(fd, blk.ptr, blk.size, 0);
+        assert(ret == blk.size);
+        close(fd);
+    }
+
     void run() {
         auto input_blocks = load_input();
         std::vector<MergeNode<T>> merge_tree = construct_merge_tree<T>(input_blocks);
@@ -60,10 +75,20 @@ public:
         std::vector<std::thread> threads;
         pthread_barrier_t barrier;
         int s = pthread_barrier_init(&barrier, NULL, num_internal_nodes);
+        std::chrono::high_resolution_clock::time_point start_time;
+        std::chrono::high_resolution_clock::time_point end_time;
 
-        auto fn = [](MergeNode<T> *node, pthread_barrier_t *barrier) {
+        auto fn = [&start_time, &end_time](MergeNode<T> *node, pthread_barrier_t *barrier) {
+            pin_thread(node->id + 1);
             pthread_barrier_wait(barrier);
+            if (node->id == 0) {
+                start_time = std::chrono::high_resolution_clock::now();
+            }
             node->run();
+            pthread_barrier_wait(barrier);
+            if (node->id == 0) {
+                end_time = std::chrono::high_resolution_clock::now();
+            }
         };
 
         for (int i=0; i<num_internal_nodes; i++) {
@@ -72,6 +97,13 @@ public:
         for (int i=0; i<num_internal_nodes; i++) {
             threads[i].join();
         }
+        std::shared_ptr<MemoryBlockWriter> writer = std::dynamic_pointer_cast<MemoryBlockWriter>(merge_tree[0].output);
+
+        float time_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0f;
+        float bw = (writer->buffer.size * 1000) / (1024 * 1024 * 1024 * time_ms);
+        spdlog::info("Duration: {}, BW: {} GBps", time_ms, bw);
+
+        write_output(writer->buffer);
     }
 
 };
