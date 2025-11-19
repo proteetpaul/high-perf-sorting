@@ -134,7 +134,7 @@ fi
 # Prepare command arguments
 CMD_ARGS="--file-size $FILE_SIZE --key-size $KEY_SIZE --value-size $VALUE_SIZE"
 CMD_ARGS="$CMD_ARGS --memory-size $MEMORY_SIZE"
-CMD_ARGS="$CMD_ARGS --num-threads $NUM_THREADS --working-dir $WORKING_DIR"
+CMD_ARGS="$CMD_ARGS --num-threads $NUM_THREADS --working-dir $WORKING_DIR --separate-values"
 
 echo "Running sorter with parameters:"
 echo "  File size: $FILE_SIZE"

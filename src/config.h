@@ -21,6 +21,8 @@ struct Config {
 
     std::string intermediate_file_prefix;
 
+    bool separate_values;
+
     inline uint64_t num_runs() {
         return (file_size_bytes + run_size_bytes - 1) / run_size_bytes;
     }

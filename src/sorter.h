@@ -13,12 +13,11 @@
 #include <unistd.h>
 #include <chrono>
 #include <iomanip>
-#include <linux/perf_event.h>
-#include <sys/ioctl.h>
-#include <sys/syscall.h>
+
 #include <pthread.h>
 
-#include "key_index_pair.h"
+#include "perf_utils.h"
+#include "key_value_pair.h"
 #include "sorted_run.h"
 #include "config.h"
 #include "merge_tree.h"
@@ -26,6 +25,10 @@
 #include "ips4o.hpp"
 
 #include <spdlog/spdlog.h>
+
+typedef uint32_t IndexType;
+
+constexpr uint32_t IndexLength = sizeof(IndexType);
 
 struct TimingInfo {
     float intermediate_write;
@@ -35,89 +38,10 @@ struct TimingInfo {
     float sort_time;
 };
 
-// struct EventInfo {
-//     int fd;
-//     int value;
-// };
 
-// struct PerfInfo {
-//     std::vector<EventInfo> cache_misses_fd;
-//     std::vector<EventInfo> cache_refs_fd;
-// };
-
-struct read_format {
-    uint64_t value;
-    uint64_t id;
-};
-
-static int perf_event_open(struct perf_event_attr *hw_event, pid_t pid, int cpu, int group_fd, unsigned long flags){
-    int fd;
-    fd = syscall(SYS_perf_event_open, hw_event, pid, cpu, group_fd, flags);
-    if (fd == -1) {
-        fprintf(stderr, "Error creating event\n");
-        exit(EXIT_FAILURE);
-    }
-  
-    return fd;
-}
-
-void configure_event(struct perf_event_attr *pe, uint64_t config){
-    memset(pe, 0, sizeof(struct perf_event_attr));
-    pe->type = PERF_TYPE_HARDWARE;
-    pe->size = sizeof(struct perf_event_attr);
-    pe->config = config;
-    pe->read_format = PERF_FORMAT_ID;
-    pe->disabled = 1;
-    pe->exclude_kernel = 1;
-    pe->exclude_hv = 1;
-}
-
-int init_perf_counter(uint64_t config) {
-    perf_event_attr pe;
-    configure_event(&pe, config);
-    int fd = perf_event_open(&pe, 0, -1, -1, 0);
-    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-    ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-    return fd;
-}
-
-int read_perf_counter(int fd) {
-    read_format result;
-    ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-    int ret = read(fd, &result, sizeof(struct read_format));
-    assert(ret > 0);
-    return result.value;
-}
-
-// void init_perf_counters(uint64_t config, std::vector<EventInfo> &fds) {
-//     int num_cpus = std::thread::hardware_concurrency();
-//     int group_fd = -1;
-
-//     for (int i=0; i<num_cpus; i++) {
-//         perf_event_attr pe;
-//         configure_event(&pe, config);
-//         EventInfo event_info;
-//         event_info.fd = perf_event_open(&pe, getpid(), i, -1, 0);
-//         ioctl(event_info.fd, PERF_EVENT_IOC_RESET, 0);
-//         ioctl(event_info.fd, PERF_EVENT_IOC_ENABLE, 0);
-        
-//         fds.push_back(event_info);
-//     }
-// }
-
-// void read_perf_counters(std::vector<EventInfo> &events) {
-//     printf("Per-core values:\n");
-//     for (int i=0; i<events.size(); i++ ) {
-//         read_format results;
-//         ioctl(events[i].fd, PERF_EVENT_IOC_DISABLE, 0);
-//         int ret = read(events[i].fd, &results, sizeof(struct read_format));
-//         printf("cpu: %d, events: %ld\n", i, results.value);
-//     }
-// }
-
-template <uint32_t KeyLength, uint32_t ValueLength>
+template <typename RecordType>
 class Sorter {
-    static constexpr uint32_t ELEM_SIZE = sizeof(KeyValuePair<KeyLength, ValueLength>);
+    static constexpr uint32_t ELEM_SIZE = sizeof(RecordType);
     Config config;
 
     int read_fd; // File from which input records are read
@@ -127,17 +51,27 @@ class Sorter {
     // PerfInfo perf_info;
     uint64_t output_file_offset;
 
-    std::vector<KeyValuePair<KeyLength, ValueLength>> read_input_chunk(uint64_t chunk_id);
+    std::vector<RecordType> read_input_chunk(uint64_t chunk_id);
 
-    SortedRun create_disk_run(std::vector<KeyValuePair<KeyLength, ValueLength>> &vec, uint64_t chunk_idx);
+    SortedRun create_disk_run(std::vector<RecordType> &vec, uint64_t chunk_idx);
 
     void write_output_chunk(void *buffer, uint64_t length);
 
-    void in_place_sort(std::vector<KeyValuePair<KeyLength, ValueLength>> &vec);
+    template <uint32_t ValueLength> 
+    void in_place_sort(std::vector<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>> &vec);
 
     void merge(std::vector<SortedRun> &sorted_runs);
 
-    void in_place_sort2(std::vector<KeyValuePair<KeyLength, ValueLength>> &vec);
+    template <uint32_t ValueLength>
+    void in_place_sort2(std::vector<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>> &vec);
+
+    void separate_values(std::vector<RecordType> &vec, 
+        std::vector<KeyValuePair<RecordType::KEY_LENGTH, IndexLength>> &key_index_pairs,
+        void* value_buffer);
+
+    void write_back_values(std::vector<RecordType> &original,
+        std::vector<KeyValuePair<RecordType::KEY_LENGTH, IndexLength>> &key_index_pairs,
+        void *value_buffer);
 
 public:
     Sorter(Config &&config) {
@@ -159,13 +93,38 @@ public:
     }
 };
 
-template <uint32_t KeyLength, uint32_t ValueLength>
-void Sorter<KeyLength, ValueLength>::in_place_sort2(std::vector<KeyValuePair<KeyLength, ValueLength>> &vec) {
+template <typename RecordType>
+void Sorter<RecordType>::separate_values(std::vector<RecordType> &vec, 
+        std::vector<KeyValuePair<RecordType::KEY_LENGTH, IndexLength>> &key_index_pairs, void* value_buffer) {
+    uint64_t value_buffer_offset = 0ll;
+    for (uint32_t i=0; i<(uint32_t)vec.size(); i++) {
+        key_index_pairs[i].set_key(&vec[i].key);
+        key_index_pairs[i].set_value(&i);
+        
+        std::memcpy((uint8_t*)value_buffer + value_buffer_offset, vec[i].value, RecordType::VALUE_LENGTH);
+        value_buffer_offset += RecordType::VALUE_LENGTH;
+    }
+}
+
+template <typename RecordType>
+void Sorter<RecordType>::write_back_values(std::vector<RecordType> &original,
+        std::vector<KeyValuePair<RecordType::KEY_LENGTH, IndexLength>> &key_index_pairs,
+        void *value_buffer) {
+    for (uint64_t i=0; i<key_index_pairs.size(); i++) {
+        original[i].set_key(&key_index_pairs[i].key);
+        void *value_ptr = (uint8_t*)value_buffer + key_index_pairs[i].value * RecordType::VALUE_LENGTH;
+        original[i].set_value(value_ptr);
+    }
+}
+
+template <typename RecordType>
+template <uint32_t ValueLength>
+void Sorter<RecordType>::in_place_sort2(std::vector<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>> &vec) {
     int miss_fd = init_perf_counter(PERF_COUNT_HW_CACHE_MISSES);
     int ref_fd = init_perf_counter(PERF_COUNT_HW_CACHE_REFERENCES);
 
     auto start = std::chrono::high_resolution_clock::now();
-    ips4o::parallel::sort(vec.begin(), vec.end(), std::less<KeyValuePair<KeyLength, ValueLength>>{}, config.num_threads);
+    ips4o::parallel::sort(vec.begin(), vec.end(), std::less<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>>{}, config.num_threads);
     auto end = std::chrono::high_resolution_clock::now();
 
     int cache_misses = read_perf_counter(miss_fd);
@@ -176,8 +135,9 @@ void Sorter<KeyLength, ValueLength>::in_place_sort2(std::vector<KeyValuePair<Key
     timing_info.sort_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
 }
 
-template <uint32_t KeyLength, uint32_t ValueLength>
-void Sorter<KeyLength, ValueLength>::in_place_sort(std::vector<KeyValuePair<KeyLength, ValueLength>> &vec) {
+template <typename RecordType>
+template <uint32_t ValueLength>
+void Sorter<RecordType>::in_place_sort(std::vector<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>> &vec) {
     std::vector<float> cache_misses_vec(config.num_threads);
     pthread_barrier_t barrier;
     int s = pthread_barrier_init(&barrier, NULL, config.num_threads);
@@ -206,7 +166,7 @@ void Sorter<KeyLength, ValueLength>::in_place_sort(std::vector<KeyValuePair<KeyL
 
         auto start = std::chrono::high_resolution_clock::now();
         ips4o::parallel::sort(vec.begin() + start_offset, vec.begin() + end_offset, 
-            std::less<KeyValuePair<KeyLength, ValueLength>>{}, 1);
+            std::less<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>>{}, 1);
         auto end = std::chrono::high_resolution_clock::now();
 
         auto time_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
@@ -229,7 +189,7 @@ void Sorter<KeyLength, ValueLength>::in_place_sort(std::vector<KeyValuePair<KeyL
     tasks.reserve(config.num_threads);
 
     // auto start = std::chrono::high_resolution_clock::now();
-    // ips4o::parallel::sort(vec.begin(), vec.end(), std::less<KeyValuePair<KeyLength, ValueLength>>{}, config.num_threads);
+    // ips4o::parallel::sort(vec.begin(), vec.end(), std::less<RecordType>{}, config.num_threads);
     uint64_t start_offset = 0ll;
     uint64_t end_offset = stride;
     for (int i=0; i<config.num_threads; i++) {
@@ -251,8 +211,8 @@ void Sorter<KeyLength, ValueLength>::in_place_sort(std::vector<KeyValuePair<KeyL
     timing_info.sort_time += std::chrono::duration_cast<std::chrono::microseconds>(actual_end_time - actual_start_time).count() / 1000.0f;
 }
 
-template <uint32_t KeyLength, uint32_t ValueLength>
-void Sorter<KeyLength, ValueLength>::sort() {
+template <typename RecordType>
+void Sorter<RecordType>::sort() {
     // Ensure that elements don't span across on-disk blocks
     assert(Config::BLOCK_SIZE_ALIGN % ELEM_SIZE == 0);
 
@@ -262,14 +222,25 @@ void Sorter<KeyLength, ValueLength>::sort() {
     uint64_t num_runs = config.num_runs();
     if (num_runs == 1) {
         auto v = read_input_chunk(0);
-        // init_perf_counters(PERF_COUNT_HW_CACHE_MISSES, perf_info.cache_misses_fd);
-        // init_perf_counters(PERF_COUNT_HW_CACHE_REFERENCES, perf_info.cache_refs_fd);
-        in_place_sort(v);
-        // read_perf_counters(perf_info.cache_misses_fd);
-        // read_perf_counters(perf_info.cache_refs_fd);
+        if (config.separate_values) {
+            spdlog::info("Separating values from keys");
+            std::vector<KeyValuePair<RecordType::KEY_LENGTH, IndexLength>> key_index_pairs(v.size());
+            void *value_buffer;
+            int ret = posix_memalign(&value_buffer, 64, RecordType::VALUE_LENGTH * v.size());
+            assert(ret == 0);
+
+            separate_values(v, key_index_pairs, value_buffer);
+            in_place_sort2<IndexLength>(key_index_pairs);
+            write_back_values(v, key_index_pairs, value_buffer);
+            free(value_buffer);
+        } else {
+            in_place_sort2<RecordType::VALUE_LENGTH>(v);
+        }
         write_output_chunk(v.data(), config.file_size_bytes);
         return;
     }
+
+    assert(config.separate_values == false);
 
     uint64_t memory_size_bytes = config.run_size_bytes;
     uint64_t merge_chunk_size_bytes = (memory_size_bytes / (num_runs + 1));
@@ -285,15 +256,15 @@ void Sorter<KeyLength, ValueLength>::sort() {
 
     for (int i=0; i<num_runs; i++) {
         auto v = read_input_chunk(i);
-        in_place_sort2(v);
+        in_place_sort2<RecordType::VALUE_LENGTH>(v);
         sorted_runs.push_back(create_disk_run(v, i));    
     }
     merge(sorted_runs);
 }
 
-template <uint32_t KeyLength, uint32_t ValueLength>
-std::vector<KeyValuePair<KeyLength, ValueLength>> Sorter<KeyLength, ValueLength>::read_input_chunk(uint64_t chunk_id) {
-    std::vector<KeyValuePair<KeyLength, ValueLength>> output_vector(config.run_size_bytes / ELEM_SIZE);
+template <typename RecordType>
+std::vector<RecordType> Sorter<RecordType>::read_input_chunk(uint64_t chunk_id) {
+    std::vector<RecordType> output_vector(config.run_size_bytes / ELEM_SIZE);
     
     auto start = std::chrono::high_resolution_clock::now();
     // TODO(): Fix this
@@ -305,8 +276,8 @@ std::vector<KeyValuePair<KeyLength, ValueLength>> Sorter<KeyLength, ValueLength>
     return output_vector;
 }
 
-template <uint32_t KeyLength, uint32_t ValueLength>
-SortedRun Sorter<KeyLength, ValueLength>::create_disk_run(std::vector<KeyValuePair<KeyLength, ValueLength>> &vec, uint64_t chunk_idx) {
+template <typename RecordType>
+SortedRun Sorter<RecordType>::create_disk_run(std::vector<RecordType> &vec, uint64_t chunk_idx) {
     std::string file_name = config.intermediate_file_prefix + "-chunk-" + std::to_string(chunk_idx);
     int fd = open(file_name.c_str(), O_CREAT | O_RDWR | O_TRUNC | O_DIRECT, 0644);
 
@@ -321,9 +292,8 @@ SortedRun Sorter<KeyLength, ValueLength>::create_disk_run(std::vector<KeyValuePa
     return SortedRun {fd, vec.size()};
 }
 
-template <uint32_t KeyLength, uint32_t ValueLength>
-void Sorter<KeyLength, ValueLength>::merge(std::vector<SortedRun> &sorted_runs) {
-    using RecordType = KeyValuePair<KeyLength, ValueLength>;
+template <typename RecordType>
+void Sorter<RecordType>::merge(std::vector<SortedRun> &sorted_runs) {
     using ReaderType = SortedRunReader<RecordType>;
 
     printf("Starting merge step...\n");
@@ -371,8 +341,8 @@ void Sorter<KeyLength, ValueLength>::merge(std::vector<SortedRun> &sorted_runs) 
             << merge_duration.count() / 1000.0 << " ms\n";
 }
 
-template <uint32_t KeyLength, uint32_t ValueLength>
-void Sorter<KeyLength, ValueLength>::write_output_chunk(void *buffer, uint64_t length) {
+template <typename RecordType>
+void Sorter<RecordType>::write_output_chunk(void *buffer, uint64_t length) {
     auto start = std::chrono::high_resolution_clock::now();
     int ret = pwrite64(write_fd, buffer, length, output_file_offset);
     assert(ret == length);

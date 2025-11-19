@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <sched.h>
 
+#include "key_value_pair.h"
 #include "sorter.h"
 #include "config.h"
 
@@ -17,6 +18,7 @@ struct ParsedArgs {
     size_t value_size;
     size_t memory_size;
     uint32_t num_threads;
+    bool separate_values;
 };
 
 size_t parseSizeString(const std::string& sizeStr) {
@@ -142,6 +144,9 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
                 printHelp(argv[0]);
                 return 0;
             }
+            else if (arg == "--separate-values") {
+                args.separate_values = true;
+            }
             else {
                 std::cerr << "Unknown argument: " << arg << std::endl;
                 std::cerr << "Use --help for usage information." << std::endl;
@@ -188,6 +193,7 @@ int main(int argc, char* argv[]) {
     config.input_file = args.working_dir + "/input-" + file_size_str + ".dat";
     config.output_file = args.working_dir + "/output-" + file_size_str + ".dat";
     config.intermediate_file_prefix = args.working_dir + "/intermediate-" + file_size_str;
+    config.separate_values = args.separate_values;
     
     // Print parsed arguments for verification
     std::cout << "Config object values:\n";
@@ -202,24 +208,24 @@ int main(int argc, char* argv[]) {
     // TODO: Use config object with your sorter implementation
     if (args.key_size == 8 && args.value_size == 8) {
         std::cout << "calling sort...\n";
-        Sorter<8, 8> sorter(std::move(config));
+        Sorter<KeyValuePair<8, 8>> sorter(std::move(config));
         sorter.sort();
         sorter.print_timing_stats();
     } 
     else if (args.key_size == 8 && args.value_size == 24) {
-        Sorter<8, 24> sorter(std::move(config));
+        Sorter<KeyValuePair<8, 24>> sorter(std::move(config));
         sorter.sort();
         sorter.print_timing_stats();
     } else if (args.key_size == 8 && args.value_size == 56) {
-        Sorter<8, 56> sorter(std::move(config));
+        Sorter<KeyValuePair<8, 56>> sorter(std::move(config));
         sorter.sort();
         sorter.print_timing_stats();
     } else if (args.key_size == 8 && args.value_size == 120) {
-        Sorter<8, 120> sorter(std::move(config));
+        Sorter<KeyValuePair<8, 120>> sorter(std::move(config));
         sorter.sort();
         sorter.print_timing_stats();
     } else if (args.key_size == 8 && args.value_size == 0) {
-        Sorter<8, 0> sorter(std::move(config));
+        Sorter<KeyValuePair<8, 0>> sorter(std::move(config));
         sorter.sort();
         sorter.print_timing_stats();
     } else {
