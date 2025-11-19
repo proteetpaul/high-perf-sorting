@@ -29,6 +29,8 @@
 typedef uint32_t IndexType;
 
 constexpr uint32_t IndexLength = sizeof(IndexType);
+// Linux cant read/write more than 2G in a single pread/pwrite call
+constexpr uint64_t MAX_IO_CHUNK_SIZE = 1<<30;
 
 struct TimingInfo {
     float intermediate_write;
@@ -267,9 +269,15 @@ std::vector<RecordType> Sorter<RecordType>::read_input_chunk(uint64_t chunk_id) 
     std::vector<RecordType> output_vector(config.run_size_bytes / ELEM_SIZE);
     
     auto start = std::chrono::high_resolution_clock::now();
-    // TODO(): Fix this
-    auto ret = pread64(read_fd, output_vector.data(), config.run_size_bytes, chunk_id * config.run_size_bytes);
-    assert(ret == config.run_size_bytes);
+    uint64_t length = config.run_size_bytes;
+    uint64_t offset = chunk_id * config.run_size_bytes;
+    while (length > 0) {
+        uint64_t bytes_to_read = std::min(MAX_IO_CHUNK_SIZE, length);
+        auto ret = pread64(read_fd, output_vector.data(), bytes_to_read, offset);
+        assert(ret == bytes_to_read);
+        length -= bytes_to_read;
+        offset += length;
+    }
     auto end = std::chrono::high_resolution_clock::now();
     
     timing_info.input_read += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
@@ -344,8 +352,13 @@ void Sorter<RecordType>::merge(std::vector<SortedRun> &sorted_runs) {
 template <typename RecordType>
 void Sorter<RecordType>::write_output_chunk(void *buffer, uint64_t length) {
     auto start = std::chrono::high_resolution_clock::now();
-    int ret = pwrite64(write_fd, buffer, length, output_file_offset);
-    assert(ret == length);
+    while (length > 0) {
+        uint64_t bytes_to_write = std::min(length, MAX_IO_CHUNK_SIZE);
+        uint64_t ret = pwrite64(write_fd, buffer, bytes_to_write, output_file_offset);
+        assert(ret == bytes_to_write);
+        output_file_offset += bytes_to_write;
+        length -= bytes_to_write;
+    }
     auto end = std::chrono::high_resolution_clock::now();
 
     timing_info.output_write += std::chrono::duration_cast<std::chrono::microseconds>(end-start).count() / 1000.0;
