@@ -224,10 +224,6 @@ int main(int argc, char* argv[]) {
         Sorter<KeyValuePair<8, 120>> sorter(std::move(config));
         sorter.sort();
         sorter.print_timing_stats();
-    } else if (args.key_size == 8 && args.value_size == 0) {
-        Sorter<KeyValuePair<8, 0>> sorter(std::move(config));
-        sorter.sort();
-        sorter.print_timing_stats();
     } else {
         throw std::runtime_error("Not all (key size, value size) combinations allowed");
     }
