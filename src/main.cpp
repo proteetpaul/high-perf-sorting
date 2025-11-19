@@ -116,6 +116,7 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
     args.value_size = 90;
     args.memory_size = parseSizeString("100M");  // 100MB default
     args.num_threads = 1;  // 1 thread default
+    args.separate_values = false;
     
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -172,7 +173,7 @@ void pin_current_thread() {
 }
 
 int main(int argc, char* argv[]) {
-    pin_current_thread();
+    // pin_current_thread();
     ParsedArgs args;
     int parse_result = parseArguments(argc, argv, args);
     

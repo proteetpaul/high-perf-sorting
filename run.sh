@@ -11,6 +11,9 @@ WORKING_DIR=$(realpath ".")
 ENABLE_PROFILE=false
 PROFILE_OUTPUT="perf.data"
 FLAMEGRAPH_OUTPUT="flamegraph.svg"
+SEPARATE_VALUES=false
+ENABLE_MEMORY_PROFILING=false
+PCM_MEMORY="/users/proteet/pcm/build/bin/pcm-memory"
 
 # Function to show usage
 show_usage() {
@@ -73,6 +76,14 @@ while [[ $# -gt 0 ]]; do
             PROFILE_OUTPUT="$2"
             shift 2
             ;;
+        --separate-values)
+            SEPARATE_VALUES=true
+            shift
+            ;;
+        --enable-mem-profiling)
+            ENABLE_MEMORY_PROFILING=true
+            shift
+            ;;
         --flamegraph-output)
             FLAMEGRAPH_OUTPUT="$2"
             shift 2
@@ -134,7 +145,11 @@ fi
 # Prepare command arguments
 CMD_ARGS="--file-size $FILE_SIZE --key-size $KEY_SIZE --value-size $VALUE_SIZE"
 CMD_ARGS="$CMD_ARGS --memory-size $MEMORY_SIZE"
-CMD_ARGS="$CMD_ARGS --num-threads $NUM_THREADS --working-dir $WORKING_DIR --separate-values"
+CMD_ARGS="$CMD_ARGS --num-threads $NUM_THREADS --working-dir $WORKING_DIR"
+
+if [ "$SEPARATE_VALUES" = true ]; then
+    CMD_ARGS="$CMD_ARGS --separate-values"
+fi
 
 echo "Running sorter with parameters:"
 echo "  File size: $FILE_SIZE"
@@ -146,6 +161,14 @@ echo "  Number of threads: $NUM_THREADS"
 echo "  Working directory: $WORKING_DIR"
 echo ""
 
+if [ "$ENABLE_MEMORY_PROFILING" = true ]; then
+    echo "Running with memory bw monitor..."
+    echo ""
+    sudo $PCM_MEMORY 0.02 -nc -silent -csv=memory_bw_output.csv -- ./src/sorter $CMD_ARGS
+    python3 ../tools/plot_mem_bw.py memory_bw_output.csv
+    echo "Exiting"
+    exit 0
+fi
 # Run the sorter
 if [ "$ENABLE_PROFILE" = true ]; then
     echo "Running with perf profiling..."

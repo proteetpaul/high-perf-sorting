@@ -15,11 +15,15 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+find_package(OpenMP REQUIRED)
+
 # Add executable
 add_executable(sorter main.cpp)
 
 # Set compile options for the target
 target_compile_options(sorter PRIVATE -O3)
+# target_compile_options(sorter PRIVATE -fopenmp)
+target_link_libraries(sorter PUBLIC OpenMP::OpenMP_CXX)
 
 # Enable additional optimizations
 target_compile_options(sorter PRIVATE -march=native -mtune=native)
