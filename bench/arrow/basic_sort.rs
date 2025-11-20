@@ -36,10 +36,15 @@ fn sort_record_batch(batch: &RecordBatch) -> Result<RecordBatch, arrow::error::A
     let key_array = struct_array.column(0);
     
     let options = Some(SortOptions { descending: false, nulls_first: false });
+    let sort_start = Instant::now();
     let indices = sort_to_indices(key_array, options, None)?;
+    let sort_end = sort_start.elapsed();
+    println!("In-place sort: {}", sort_end.as_millis());
 
-    // Apply the indices to the original StructArray to get the sorted result
+    let take_start = Instant::now();
     let sorted_struct_array = take(struct_array, &indices, None)?;
+    let take_end = take_start.elapsed();
+    println!("Take took: {}", take_end.as_millis());
     
     // Recreate the RecordBatch with the sorted StructArray
     let sorted_batch = RecordBatch::try_new(
@@ -82,14 +87,16 @@ fn run_parquet_sorter(args: Args) -> Result<(), arrow::error::ArrowError> {
         println!("Time taken to sort: {}", sort_end.as_millis());
         
         // Write the sorted batch to the output file
+        let write_start = Instant::now();
         writer.write(&sorted_batch)?;
+        let write_end = write_start.elapsed();
+        println!("Time taken to write: {}", write_end.as_millis());
         total_sorted_rows += sorted_batch.num_rows();
         num_batches += 1;
     }
     
     println!("Num batches: {}", num_batches);
     
-    // 4. Finalize
     writer.close()?;
 
     println!("Successfully sorted {} rows.", total_sorted_rows);
