@@ -1,13 +1,16 @@
-use std::fs::File;
+use std::fs::{File, OpenOptions};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::PathBuf;
 use std::time::Instant;
 extern crate arrow;
 extern crate clap;
 extern crate parquet;
+extern crate libc;
 
 use arrow::array::{RecordBatch, RecordBatchReader, StructArray};
 use arrow::compute::{SortOptions, sort_to_indices, take};
 use clap::{Parser, arg};
+use libc::O_DIRECT;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::properties::WriterProperties;
@@ -48,7 +51,7 @@ fn sort_record_batch(batch: &RecordBatch) -> Result<RecordBatch, arrow::error::A
 }
 
 fn run_parquet_sorter(args: Args) -> Result<(), arrow::error::ArrowError> {
-    let file = File::open(&args.input_file)?;
+    let file = OpenOptions::new().custom_flags(O_DIRECT).open(&args.input_file)?;
     // let file_reader = SerializedFileReader::new(file)?;
     // let row_group_reader = file_reader.get_row_group(0)?;
     let mut builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
@@ -59,7 +62,7 @@ fn run_parquet_sorter(args: Args) -> Result<(), arrow::error::ArrowError> {
 
     // let record_batch_reader = arrow_reader.get_record_reader(schema_ref, None)?;
     
-    let output_file = File::create(&args.output_file)?;
+    let output_file = OpenOptions::new().truncate(true).write(true).custom_flags(O_DIRECT).open(&args.output_file)?;
     let props = WriterProperties::builder().build();
     let mut writer = ArrowWriter::try_new(output_file, schema.clone(), Some(props))?;
     println!("Record batch schema: {}", schema);
