@@ -1,0 +1,17 @@
+[package]
+name = "sort-benchmarks"
+description = "Basic sorting benchmarks for apache arrow"
+publish = false
+
+[[bin]]
+name = "basic_sorter"
+path = "basic_sort.rs"
+
+[[bin]]
+name = "generate_parquet"
+path = "generate_parquet.rs"
+
+[dependencies]
+arrow = { version = "57.0.0", features = ["prettyprint"] }
+parquet = { version = "57.0.0" }
+clap = { version = "4.5.53", features = ["derive"] }

@@ -1,0 +1,4 @@
+[workspace]
+members = [
+    "bench/arrow", # Name of the folder containing the actual code
+]
