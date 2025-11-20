@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::time::Instant;
 extern crate arrow;
 extern crate clap;
 extern crate parquet;
@@ -66,18 +66,24 @@ fn run_parquet_sorter(args: Args) -> Result<(), arrow::error::ArrowError> {
 
     let mut total_sorted_rows = 0;
     let mut num_batches = 0;
-
+    let start_read = Instant::now();
     for batch_result in record_batch_reader {
+        let end_read = start_read.elapsed();
+        println!("Time elapsed in seconds: {}", end_read.as_millis());
         let batch = batch_result?;
         
+        let sort_start = Instant::now();
         // Apply the sorting logic to the current batch
         let sorted_batch = sort_record_batch(&batch)?;
+        let sort_end = sort_start.elapsed();
+        println!("Time taken to sort: {}", sort_end.as_millis());
         
         // Write the sorted batch to the output file
         writer.write(&sorted_batch)?;
         total_sorted_rows += sorted_batch.num_rows();
         num_batches += 1;
     }
+    
     println!("Num batches: {}", num_batches);
     
     // 4. Finalize
