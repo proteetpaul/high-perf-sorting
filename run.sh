@@ -164,7 +164,7 @@ echo ""
 if [ "$ENABLE_MEMORY_PROFILING" = true ]; then
     echo "Running with memory bw monitor..."
     echo ""
-    sudo $PCM_MEMORY 0.02 -nc -silent -csv=memory_bw_output.csv -- ./src/sorter $CMD_ARGS
+    sudo $PCM_MEMORY 0.02 -nc -silent -csv=memory_bw_output.csv -- ./src/sorter $CMD_ARGS > log.txt
     python3 ../tools/plot_mem_bw.py memory_bw_output.csv
     echo "Exiting"
     exit 0

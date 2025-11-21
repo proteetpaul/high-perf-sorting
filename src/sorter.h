@@ -13,6 +13,10 @@
 #include <unistd.h>
 #include <chrono>
 #include <iomanip>
+#include <parallel/algorithm>
+#include <algorithm>
+#include <sys/mman.h>
+#include <errno.h>
 
 #include <pthread.h>
 
@@ -63,6 +67,9 @@ class Sorter {
 
     template <uint32_t ValueLength> 
     void in_place_sort(std::vector<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>> &vec);
+
+    template <uint32_t ValueLength>
+    void in_place_std_sort(std::vector<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>> &vec);
 
     void merge(std::vector<SortedRun> &sorted_runs);
 
@@ -123,6 +130,9 @@ template <typename RecordType>
 void Sorter<RecordType>::write_back_values(std::vector<RecordType> &original,
         std::vector<KeyValuePair<RecordType::KEY_LENGTH, IndexLength>> &key_index_pairs,
         void *value_buffer) {
+    int miss_fd = init_perf_counter(PERF_COUNT_HW_CACHE_MISSES);
+    int ref_fd = init_perf_counter(PERF_COUNT_HW_CACHE_REFERENCES);
+
     spdlog::info("Start writing back values");
     auto start = std::chrono::high_resolution_clock::now();
     // TODO(): Maybe unroll loop??
@@ -135,6 +145,28 @@ void Sorter<RecordType>::write_back_values(std::vector<RecordType> &original,
     auto end = std::chrono::high_resolution_clock::now();
     timing_info.value_write_back += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
     spdlog::info("Done writing back values");
+
+    uint64_t lld_misses = read_perf_counter(miss_fd);
+    uint64_t lld_hits = read_perf_counter(ref_fd);
+    float lld_miss_rate = lld_misses * 100.0f / (lld_misses + lld_hits);
+    spdlog::info("lld miss rate: {}", lld_miss_rate);
+}
+
+template <typename RecordType>
+template <uint32_t ValueLength>
+void Sorter<RecordType>::in_place_std_sort(std::vector<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>> &vec) {
+    spdlog::info("Start in-place sort");
+
+    auto start = std::chrono::high_resolution_clock::now();
+    if (config.num_threads > 1) {
+        __gnu_parallel::sort(vec.begin(), vec.end(), std::less<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>>{});
+    } else {
+        std::sort(vec.begin(), vec.end(), std::less<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>>{});
+    }
+    auto end = std::chrono::high_resolution_clock::now();
+
+    spdlog::info("Done in-place sort");
+    timing_info.sort_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
 }
 
 template <typename RecordType>
@@ -143,6 +175,18 @@ void Sorter<RecordType>::in_place_sort2(std::vector<KeyValuePair<RecordType::KEY
     spdlog::info("Start in-place sort");
     int miss_fd = init_perf_counter(PERF_COUNT_HW_CACHE_MISSES);
     int ref_fd = init_perf_counter(PERF_COUNT_HW_CACHE_REFERENCES);
+    int cycles_fd = init_perf_counter(PERF_COUNT_HW_CPU_CYCLES);
+    int instructions_fd = init_perf_counter(PERF_COUNT_HW_INSTRUCTIONS);
+    
+
+    // int tlb_miss_fd = init_perf_counter_cache((PERF_COUNT_HW_CACHE_DTLB << 0) 
+    //     | (PERF_COUNT_HW_CACHE_OP_READ << 8) 
+    //     | (PERF_COUNT_HW_CACHE_RESULT_MISS << 16));
+    // int tlb_ref_fd = init_perf_counter_cache((PERF_COUNT_HW_CACHE_DTLB << 0) 
+    //     | (PERF_COUNT_HW_CACHE_OP_READ << 8) 
+    //     | (PERF_COUNT_HW_CACHE_RESULT_ACCESS << 16));
+    int branch_miss_fd = init_perf_counter(PERF_COUNT_HW_BRANCH_MISSES);
+    int branch_retired_fd = init_perf_counter(PERF_COUNT_HW_BRANCH_INSTRUCTIONS);
 
     auto start = std::chrono::high_resolution_clock::now();
     ips4o::parallel::sort(vec.begin(), vec.end(), std::less<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>>{}, config.num_threads);
@@ -153,6 +197,22 @@ void Sorter<RecordType>::in_place_sort2(std::vector<KeyValuePair<RecordType::KEY
     int refs = read_perf_counter(ref_fd);
     float miss_ratio = 100.0f * cache_misses / ((float)cache_misses + (float)refs);
     spdlog::info("Miss ratio: {}", miss_ratio);
+
+    // uint64_t tlb_misses = read_perf_counter(tlb_miss_fd);
+    // uint64_t tlb_refs = read_perf_counter(tlb_ref_fd);
+    uint64_t branch_misses = read_perf_counter(branch_miss_fd);
+    uint64_t branches_retired = read_perf_counter(branch_retired_fd);
+    uint64_t cycles = read_perf_counter(cycles_fd);
+    uint64_t instructions = read_perf_counter(instructions_fd);
+
+    float branch_miss_ratio = (branch_misses * 100.0f) / branches_retired;
+
+    float cpi = (cycles * 1.0f) / instructions;
+    spdlog::info("Branch miss %: {}", branch_miss_ratio);
+    spdlog::info("CPI: {}", cpi);
+    
+    // float tlb_miss_rate = tlb_misses * 100.0f / (tlb_misses + tlb_refs);
+    // spdlog::info("TLB miss rate: {}", tlb_miss_rate);
 
     timing_info.sort_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
 }
@@ -246,14 +306,26 @@ void Sorter<RecordType>::sort() {
         auto v = read_input_chunk(0);
         if (config.separate_values) {
             std::vector<KeyValuePair<RecordType::KEY_LENGTH, IndexLength>> key_index_pairs(v.size());
-            void *value_buffer;
-            int ret = posix_memalign(&value_buffer, 64, RecordType::VALUE_LENGTH * v.size());
-            assert(ret == 0);
+            // int ret = posix_memalign(&value_buffer, 64, RecordType::VALUE_LENGTH * v.size());
+            void *value_buffer = mmap(NULL, RecordType::VALUE_LENGTH * v.size(), PROT_READ | PROT_WRITE, 
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE , -1, 0);
+            if (value_buffer == MAP_FAILED) {
+                spdlog::info("Err: {}", strerror(errno));
+                exit(1);
+            }
 
             separate_values(v, key_index_pairs, value_buffer);
-            in_place_sort2<IndexLength>(key_index_pairs);
+            if (config.use_std_sort) {
+                in_place_std_sort<IndexLength>(key_index_pairs);
+            } else {
+                in_place_sort2<IndexLength>(key_index_pairs);
+            }
+            
             write_back_values(v, key_index_pairs, value_buffer);
-            free(value_buffer);
+            // free(value_buffer);
+            munmap(value_buffer, RecordType::VALUE_LENGTH * v.size());
+        } else if (config.use_std_sort) {
+            in_place_std_sort<RecordType::VALUE_LENGTH>(v);
         } else {
             in_place_sort2<RecordType::VALUE_LENGTH>(v);
         }

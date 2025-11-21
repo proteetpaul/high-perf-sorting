@@ -23,6 +23,8 @@ struct Config {
 
     bool separate_values;
 
+    bool use_std_sort;
+
     inline uint64_t num_runs() {
         return (file_size_bytes + run_size_bytes - 1) / run_size_bytes;
     }

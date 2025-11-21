@@ -19,6 +19,7 @@ struct ParsedArgs {
     size_t memory_size;
     uint32_t num_threads;
     bool separate_values;
+    bool use_std_sort;
 };
 
 size_t parseSizeString(const std::string& sizeStr) {
@@ -148,6 +149,9 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
             else if (arg == "--separate-values") {
                 args.separate_values = true;
             }
+            else if (arg == "--use-std-sort") {
+                args.use_std_sort = true;
+            }
             else {
                 std::cerr << "Unknown argument: " << arg << std::endl;
                 std::cerr << "Use --help for usage information." << std::endl;
@@ -178,37 +182,24 @@ int main(int argc, char* argv[]) {
     int parse_result = parseArguments(argc, argv, args);
     
     if (parse_result == 0) {
-        return 0;  // Help was printed
+        return 0;
     }
     else if (parse_result == 1) {
-        return 1;  // Error occurred
+        return 1;
     }
     
-    // Create Config object and set values
     Config config;
     config.num_threads = args.num_threads;
     config.run_size_bytes = args.memory_size;
     config.file_size_bytes = args.input_bytes;
-    // Create human-friendly file names with size information
     std::string file_size_str = formatFileSize(args.input_bytes);
     config.input_file = args.working_dir + "/input-" + file_size_str + ".dat";
     config.output_file = args.working_dir + "/output-" + file_size_str + ".dat";
     config.intermediate_file_prefix = args.working_dir + "/intermediate-" + file_size_str;
     config.separate_values = args.separate_values;
+    config.use_std_sort = args.use_std_sort;
     
-    // Print parsed arguments for verification
-    std::cout << "Config object values:\n";
-    std::cout << "  Number of threads: " << config.num_threads << std::endl;
-    std::cout << "  Run size bytes: " << config.run_size_bytes << std::endl;
-    std::cout << "  File size bytes: " << config.file_size_bytes << std::endl;
-    std::cout << "  Input file: " << config.input_file << std::endl;
-    std::cout << "  Output file: " << config.output_file << std::endl;
-    std::cout << "  Intermediate file: " << config.intermediate_file_prefix << std::endl;
-    std::cout << "  Number of runs: " << config.num_runs() << std::endl;
-    
-    // TODO: Use config object with your sorter implementation
     if (args.key_size == 8 && args.value_size == 8) {
-        std::cout << "calling sort...\n";
         Sorter<KeyValuePair<8, 8>> sorter(std::move(config));
         sorter.sort();
         sorter.print_timing_stats();

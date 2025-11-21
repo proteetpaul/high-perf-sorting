@@ -1,4 +1,5 @@
 #include "../../src/key_value_pair.h"
+#include "../../src/perf_utils.h"
 #include "node.h"
 
 #include <cassert>
@@ -84,7 +85,22 @@ public:
             if (node->id == 0) {
                 start_time = std::chrono::high_resolution_clock::now();
             }
+            
+            int branch_miss_fd = init_perf_counter(PERF_COUNT_HW_BRANCH_MISSES);
+            int branch_retired_fd = init_perf_counter(PERF_COUNT_HW_BRANCH_INSTRUCTIONS);
+            int cycles_fd = init_perf_counter(PERF_COUNT_HW_CPU_CYCLES);
+            int instructions_fd = init_perf_counter(PERF_COUNT_HW_INSTRUCTIONS);
             node->run();
+            uint64_t branch_misses = read_perf_counter(branch_miss_fd);
+            uint64_t branches_retired = read_perf_counter(branch_retired_fd);
+            uint64_t cycles = read_perf_counter(cycles_fd);
+            uint64_t instructions = read_perf_counter(instructions_fd);
+            
+            float branch_miss_ratio = (branch_misses * 100.0f) / branches_retired;
+            float cpi = (cycles * 1.0f) / instructions;
+            spdlog::info("Branch miss %: {}", branch_miss_ratio);
+            spdlog::info("CPI: {}", cpi);
+
             pthread_barrier_wait(barrier);
             if (node->id == 0) {
                 end_time = std::chrono::high_resolution_clock::now();

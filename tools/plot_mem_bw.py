@@ -89,9 +89,45 @@ def plot_memory_bandwidth(csv_filepath: str):
             linestyle=':'
         )
 
+        events_to_plot = [
+            {'timestamp': '2025-11-20 14:29:41.816', 'label': 'Sort Start', 'color': 'red'},
+            {'timestamp': '2025-11-20 14:29:41.491', 'label': 'Start KV separation', 'color': 'purple'},
+            {'timestamp': '2025-11-20 14:29:41.983', 'label': 'Start writing back values', 'color': 'purple'},
+            {'timestamp': '2025-11-20 14:29:42.924', 'label': 'End writing back values', 'color': 'purple'},
+        ]
+
+        for event in events_to_plot:
+            # Convert the event timestamp string to a datetime object
+            event_dt = pd.to_datetime(event['timestamp'])
+
+            # Draw the vertical line
+            ax.axvline(
+                x=event_dt, 
+                color=event['color'], 
+                linestyle='-.', 
+                linewidth=1.5,
+                alpha=0.8,
+                # Note: We omit the 'label' here to keep the legend focused on bandwidth lines
+            )
+            
+            # Add text annotation
+            # We place the text near the top of the plot (e.g., 95% of max Y value)
+            y_max = df[f'Total Bandwidth ({UNIT_LABEL})'].max()
+            ax.text(
+                x=event_dt,
+                y=y_max * 0.95, # Place near the top
+                s=event['label'],
+                color=event['color'],
+                rotation=90,
+                verticalalignment='top',
+                horizontalalignment='right',
+                fontsize=10,
+                bbox=dict(facecolor='white', alpha=0.6, edgecolor='none', boxstyle='round,pad=0.3')
+            )
+
         # Formatting the plot
         ax.set_title(
-            'Time Series Analysis of Utilized Memory Bandwidth (System Total)', 
+            'Utilized Memory Bandwidth (50 threads - sample sort with KV separation)', 
             fontsize=16, 
             fontweight='bold', 
             pad=20

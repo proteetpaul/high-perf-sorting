@@ -26,9 +26,9 @@ static int perf_event_open(struct perf_event_attr *hw_event, pid_t pid, int cpu,
     return fd;
 }
 
-void configure_event(struct perf_event_attr *pe, uint64_t config){
+void configure_event(struct perf_event_attr *pe, uint64_t config, uint32_t type){
     memset(pe, 0, sizeof(struct perf_event_attr));
-    pe->type = PERF_TYPE_HARDWARE;
+    pe->type = type;
     pe->size = sizeof(struct perf_event_attr);
     pe->config = config;
     pe->read_format = PERF_FORMAT_ID;
@@ -39,17 +39,26 @@ void configure_event(struct perf_event_attr *pe, uint64_t config){
 
 int init_perf_counter(uint64_t config) {
     perf_event_attr pe;
-    configure_event(&pe, config);
+    configure_event(&pe, config, PERF_TYPE_HARDWARE);
     int fd = perf_event_open(&pe, 0, -1, -1, 0);
     ioctl(fd, PERF_EVENT_IOC_RESET, 0);
     ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
     return fd;
 }
 
-int read_perf_counter(int fd) {
+uint64_t read_perf_counter(int fd) {
     read_format result;
     ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
     int ret = read(fd, &result, sizeof(struct read_format));
     assert(ret > 0);
     return result.value;
+}
+
+int init_perf_counter_cache(uint64_t config) {
+    perf_event_attr pe;
+    configure_event(&pe, config, PERF_TYPE_HW_CACHE);
+    int fd = perf_event_open(&pe, 0, -1, -1, 0);
+    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
+    ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
+    return fd;
 }
