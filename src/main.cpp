@@ -203,15 +203,15 @@ int main(int argc, char* argv[]) {
         Sorter<KeyValuePair<8, 8>> sorter(std::move(config));
         sorter.sort();
         sorter.print_timing_stats();
-    } 
-    else if (args.key_size == 8 && args.value_size == 24) {
-        Sorter<KeyValuePair<8, 24>> sorter(std::move(config));
-        sorter.sort();
-        sorter.print_timing_stats();
-    } else if (args.key_size == 8 && args.value_size == 56) {
-        Sorter<KeyValuePair<8, 56>> sorter(std::move(config));
-        sorter.sort();
-        sorter.print_timing_stats();
+    // } 
+    // else if (args.key_size == 8 && args.value_size == 24) {
+    //     Sorter<KeyValuePair<8, 24>> sorter(std::move(config));
+    //     sorter.sort();
+    //     sorter.print_timing_stats();
+    // } else if (args.key_size == 8 && args.value_size == 56) {
+    //     Sorter<KeyValuePair<8, 56>> sorter(std::move(config));
+    //     sorter.sort();
+    //     sorter.print_timing_stats();
     } else if (args.key_size == 8 && args.value_size == 120) {
         Sorter<KeyValuePair<8, 120>> sorter(std::move(config));
         sorter.sort();

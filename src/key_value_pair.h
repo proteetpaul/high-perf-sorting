@@ -129,6 +129,46 @@ struct KeyValuePair<8, 4> {
 };
 
 template <>
+struct KeyValuePair<8, 8> {
+    static constexpr uint32_t KEY_LENGTH = 8;
+    static constexpr uint32_t VALUE_LENGTH = 8;
+    uint64_t key;
+
+    uint64_t value;
+
+    KeyValuePair() {}
+
+    static KeyValuePair<8, 8> inf() {
+        KeyValuePair<8, 8> k;
+        k.key = uint64_t(-1);
+        return k;
+    }
+
+    static KeyValuePair<8, 8> from_ptr(void *ptr) {
+        KeyValuePair<8, 8> k;
+        k.key = *reinterpret_cast<uint64_t*>(ptr);
+        k.value = *reinterpret_cast<uint64_t*>((uint8_t*)ptr + sizeof(uint64_t));
+        return k;
+    }
+
+    bool operator < (const KeyValuePair<8, 8> &other) const {
+        return __builtin_bswap64(this->key) < __builtin_bswap64(other.key);
+    }
+
+    bool operator == (const KeyValuePair<8, 8> &other) const {
+        return this->key == other.key;
+    }
+
+    void set_key(void *key) {
+        this->key = *reinterpret_cast<uint64_t*>(key);
+    }
+
+    void set_value(void *value) {
+        this->value = *reinterpret_cast<uint64_t*>(value);
+    }
+};
+
+template <>
 struct KeyValuePair<8, 0> {
     static constexpr uint32_t KEY_LENGTH = 8;
     static constexpr uint32_t VALUE_LENGTH = 0;
@@ -163,3 +203,19 @@ struct KeyValuePair<8, 0> {
     void set_value(void *value) {
     }
 };
+
+template<typename RecordType>
+RecordType mean(RecordType &r1, RecordType &r2) {
+    static_assert(RecordType::KEY_LENGTH == 8);
+    RecordType result;
+    result.key = (r1.key + r2.key) / 2;
+    return result;
+}
+
+template<typename RecordType>
+RecordType increment(RecordType &r) {
+    static_assert(RecordType::KEY_LENGTH == 8);
+    RecordType result = r;
+    result.key++;
+    return result;
+}
