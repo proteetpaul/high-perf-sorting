@@ -179,12 +179,6 @@ void Sorter<RecordType>::in_place_sort2(std::vector<KeyValuePair<RecordType::KEY
     int instructions_fd = init_perf_counter(PERF_COUNT_HW_INSTRUCTIONS);
     
 
-    // int tlb_miss_fd = init_perf_counter_cache((PERF_COUNT_HW_CACHE_DTLB << 0) 
-    //     | (PERF_COUNT_HW_CACHE_OP_READ << 8) 
-    //     | (PERF_COUNT_HW_CACHE_RESULT_MISS << 16));
-    // int tlb_ref_fd = init_perf_counter_cache((PERF_COUNT_HW_CACHE_DTLB << 0) 
-    //     | (PERF_COUNT_HW_CACHE_OP_READ << 8) 
-    //     | (PERF_COUNT_HW_CACHE_RESULT_ACCESS << 16));
     int branch_miss_fd = init_perf_counter(PERF_COUNT_HW_BRANCH_MISSES);
     int branch_retired_fd = init_perf_counter(PERF_COUNT_HW_BRANCH_INSTRUCTIONS);
 
@@ -198,8 +192,6 @@ void Sorter<RecordType>::in_place_sort2(std::vector<KeyValuePair<RecordType::KEY
     float miss_ratio = 100.0f * cache_misses / ((float)cache_misses + (float)refs);
     spdlog::info("Miss ratio: {}", miss_ratio);
 
-    // uint64_t tlb_misses = read_perf_counter(tlb_miss_fd);
-    // uint64_t tlb_refs = read_perf_counter(tlb_ref_fd);
     uint64_t branch_misses = read_perf_counter(branch_miss_fd);
     uint64_t branches_retired = read_perf_counter(branch_retired_fd);
     uint64_t cycles = read_perf_counter(cycles_fd);
@@ -210,9 +202,6 @@ void Sorter<RecordType>::in_place_sort2(std::vector<KeyValuePair<RecordType::KEY
     float cpi = (cycles * 1.0f) / instructions;
     spdlog::info("Branch miss %: {}", branch_miss_ratio);
     spdlog::info("CPI: {}", cpi);
-    
-    // float tlb_miss_rate = tlb_misses * 100.0f / (tlb_misses + tlb_refs);
-    // spdlog::info("TLB miss rate: {}", tlb_miss_rate);
 
     timing_info.sort_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
 }
@@ -357,23 +346,32 @@ void Sorter<RecordType>::sort() {
 
 template <typename RecordType>
 std::vector<RecordType> Sorter<RecordType>::read_input_chunk(uint64_t chunk_id) {
+    void *input_buffer = mmap(NULL, config.run_size_bytes, PROT_READ | PROT_WRITE, 
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE , -1, 0);
     spdlog::info("Start reading input");
-    std::vector<RecordType> output_vector(config.run_size_bytes / ELEM_SIZE);
     
     auto start = std::chrono::high_resolution_clock::now();
     uint64_t length = config.run_size_bytes;
-    uint64_t offset = chunk_id * config.run_size_bytes;
+    uint64_t file_offset = chunk_id * config.run_size_bytes;
+    uint64_t io_offset = 0;
+    uint64_t num_io_chunks = config.run_size_bytes / MAX_IO_CHUNK_SIZE;
+
+    void *ptr = input_buffer;
     while (length > 0) {
         uint64_t bytes_to_read = std::min(MAX_IO_CHUNK_SIZE, length);
-        auto ret = pread64(read_fd, output_vector.data(), bytes_to_read, offset);
+        auto ret = pread64(read_fd, ptr, bytes_to_read, file_offset + io_offset);
         assert(ret == bytes_to_read);
         length -= bytes_to_read;
-        offset += bytes_to_read;
+        io_offset += bytes_to_read;
+        ptr += bytes_to_read;
     }
     auto end = std::chrono::high_resolution_clock::now();
     
     timing_info.input_read += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
     spdlog::info("Done reading input");
+
+    std::vector<RecordType> output_vector((RecordType*)input_buffer, (RecordType*)input_buffer + config.run_size_bytes / sizeof(RecordType));
+    munmap(input_buffer, config.run_size_bytes);
     return output_vector;
 }
 
@@ -448,7 +446,7 @@ void Sorter<RecordType>::write_output_chunk(void *buffer, uint64_t length) {
     auto start = std::chrono::high_resolution_clock::now();
     while (length > 0) {
         uint64_t bytes_to_write = std::min(length, MAX_IO_CHUNK_SIZE);
-        uint64_t ret = pwrite64(write_fd, buffer, bytes_to_write, output_file_offset);
+        uint64_t ret = pwrite64(write_fd, buffer + output_file_offset, bytes_to_write, output_file_offset);
         assert(ret == bytes_to_write);
         output_file_offset += bytes_to_write;
         length -= bytes_to_write;

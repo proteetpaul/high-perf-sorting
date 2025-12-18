@@ -9,7 +9,7 @@ READ_CHUNK_SIZE="100M"
 NUM_THREADS=1
 WORKING_DIR=$(realpath ".")
 ENABLE_PROFILE=false
-PROFILE_OUTPUT="perf.data"
+PROFILE_OUTPUT="perf.txt"
 FLAMEGRAPH_OUTPUT="flamegraph.svg"
 SEPARATE_VALUES=false
 ENABLE_MEMORY_PROFILING=false
@@ -182,24 +182,23 @@ if [ "$ENABLE_PROFILE" = true ]; then
         echo "  sudo apt-get install linux-tools-common linux-tools-generic"
         exit 1
     fi
+    ./src/sorter $CMD_ARGS > log.txt &
+    PID=$!
+    sudo /usr/sbin/profile-bpfcc -K -f -F 1000 --pid $PID -d 20 --stack-storage-size=40000 > "$PROFILE_OUTPUT" &
+    PROFILE_PID=$!
+
+    wait $PID
+    wait $PROFILE_PID
+
+    # Generate flamegraph using local FlameGraph scripts
+    echo "Generating flamegraph using local FlameGraph scripts..."
+    FLAMEGRAPH_DIR="$ROOT_DIR/FlameGraph"
     
-    # Run with perf
-    perf record -g -o "$PROFILE_OUTPUT" ./src/sorter $CMD_ARGS
-    
-    if [ $? -eq 0 ]; then        
-        # Generate flamegraph using local FlameGraph scripts
-        echo "Generating flamegraph using local FlameGraph scripts..."
-        FLAMEGRAPH_DIR="$ROOT_DIR/FlameGraph"
-        
-        if [ -f "$FLAMEGRAPH_DIR/flamegraph.pl" ] && [ -f "$FLAMEGRAPH_DIR/stackcollapse-perf.pl" ]; then
-            perf script -i "$PROFILE_OUTPUT" | "$FLAMEGRAPH_DIR/stackcollapse-perf.pl" | "$FLAMEGRAPH_DIR/flamegraph.pl" > "$FLAMEGRAPH_OUTPUT"
-            echo "Flamegraph saved to: $FLAMEGRAPH_OUTPUT"
-        else
-            echo "Error: Local FlameGraph scripts not found in $FLAMEGRAPH_DIR"
-        fi
+    if [ -f "$FLAMEGRAPH_DIR/flamegraph.pl" ] && [ -f "$FLAMEGRAPH_DIR/stackcollapse-perf.pl" ]; then
+        ../FlameGraph/flamegraph.pl --title="Flame Graph for IO" "$PROFILE_OUTPUT" > $FLAMEGRAPH_OUTPUT
+        echo "Flamegraph saved to: $FLAMEGRAPH_OUTPUT"
     else
-        echo "Sorter failed!"
-        exit 1
+        echo "Error: Local FlameGraph scripts not found in $FLAMEGRAPH_DIR"
     fi
 else
     echo "Running sorter..."
