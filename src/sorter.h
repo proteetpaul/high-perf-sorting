@@ -399,13 +399,22 @@ std::vector<RecordType> Sorter<RecordType>::read_input_chunk(uint64_t chunk_id) 
     
     auto start = std::chrono::high_resolution_clock::now();
     uint64_t length = config.run_size_bytes;
-    uint64_t offset = chunk_id * config.run_size_bytes;
+    uint64_t file_offset = chunk_id * config.run_size_bytes;
+    uint64_t io_offset = 0;
+    // uint64_t num_io_chunks = config.run_size_bytes / MAX_IO_CHUNK_SIZE;
+
+    // #pragma omp parallel for num_threads(config.num_threads)
+    // for (int i=0; i<num_io_chunks; i++) {
+    //     uint64_t io_offset = offset +  i * MAX_IO_CHUNK_SIZE;
+    //     uint64_t ret = pread64(write_fd, (uint8_t*)output_vector.data() + io_offset, MAX_IO_CHUNK_SIZE, io_offset);
+    //     assert(ret == MAX_IO_CHUNK_SIZE);
+    // }
     while (length > 0) {
         uint64_t bytes_to_read = std::min(MAX_IO_CHUNK_SIZE, length);
-        auto ret = pread64(read_fd, output_vector.data(), bytes_to_read, offset);
+        auto ret = pread64(read_fd, output_vector.data() + io_offset, bytes_to_read, file_offset + io_offset);
         assert(ret == bytes_to_read);
         length -= bytes_to_read;
-        offset += bytes_to_read;
+        io_offset += bytes_to_read;
     }
     auto end = std::chrono::high_resolution_clock::now();
     
