@@ -1,4 +1,5 @@
 use std::fs::{File, OpenOptions};
+use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -56,7 +57,9 @@ fn sort_record_batch(batch: &RecordBatch) -> Result<RecordBatch, arrow::error::A
 }
 
 fn run_parquet_sorter(args: Args) -> Result<(), arrow::error::ArrowError> {
-    let file = OpenOptions::new().custom_flags(O_DIRECT).open(&args.input_file)?;
+    let mut file = OpenOptions::new().custom_flags(O_DIRECT).open(&args.input_file)?;
+    let mut buf = Vec::<u8>::new();
+    file.read_to_end(&mut buf).unwrap();
     // let file_reader = SerializedFileReader::new(file)?;
     // let row_group_reader = file_reader.get_row_group(0)?;
     let mut builder = ParquetRecordBatchReaderBuilder::try_new(file)?;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "key_value_pair.h"
+#include "spdlog/spdlog.h"
 
 #include <algorithm>
 #include <cassert>
@@ -18,16 +19,19 @@ std::pair<std::vector<std::vector<RecordType*>>, std::vector<std::vector<uint64_
     assert(start_ptrs.size() == lengths.size());
 
     int num_arrays = start_ptrs.size();
-    RecordType *min_elem;
-    RecordType *max_elem;
+    RecordType min_elem;
+    min_elem.key = INT64_MAX;
+    RecordType max_elem;
+    max_elem.key = INT64_MIN;
+
     uint64_t total_elems = 0ll;
-    for (int i=1; i<num_arrays; i++) {
+    for (int i=0; i<num_arrays; i++) {
         if (lengths[i] > 0) {
-            if (start_ptrs[i][0] < *min_elem) {
-                min_elem = start_ptrs[i];
+            if (start_ptrs[i][0] < min_elem) {
+                min_elem = start_ptrs[i][0];
             }
-            if (*max_elem < start_ptrs[i][lengths[i]-1]) {
-                max_elem = start_ptrs[i];
+            if (max_elem < start_ptrs[i][lengths[i]-1]) {
+                max_elem = start_ptrs[i][lengths[i]-1];
             }
         }
         total_elems += lengths[i];
@@ -39,26 +43,26 @@ std::pair<std::vector<std::vector<RecordType*>>, std::vector<std::vector<uint64_
     }
 
     while (min_elem < max_elem) {
-        RecordType mid = mean<RecordType>(*min_elem, *max_elem);
+        RecordType mid = mean<RecordType>(min_elem, max_elem);
         uint64_t count_le_mid = 0ll;
         for (int i=0; i<num_arrays; i++) {
             count_le_mid += std::upper_bound(start_ptrs[i], start_ptrs[i] + lengths[i], mid) - start_ptrs[i];
         }
         
         if (count_le_mid < total_elems / 2) {
-            *min_elem = increment<RecordType>(mid);
+            min_elem = increment<RecordType>(mid);
         } else {
-            *max_elem = mid;
+            max_elem = decrement<RecordType>(mid);
         }
     }
-    RecordType *split_value = min_elem;
+    RecordType split_value = min_elem;
 
     std::vector<uint64_t> left_lengths(num_arrays);
     std::vector<uint64_t> right_lengths(num_arrays);
 
     std::vector<RecordType*> right_start_ptrs(num_arrays);
     for (int i=0; i<num_arrays; i++) {
-        uint64_t idx = std::upper_bound(start_ptrs[i], start_ptrs[i] + lengths[i], *split_value) - start_ptrs[i];
+        uint64_t idx = std::upper_bound(start_ptrs[i], start_ptrs[i] + lengths[i], split_value) - start_ptrs[i];
         left_lengths[i] = idx;
         right_lengths[i] = lengths[i] - idx;
         right_start_ptrs[i] = start_ptrs[i] + idx;

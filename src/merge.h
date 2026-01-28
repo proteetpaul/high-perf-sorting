@@ -1,21 +1,24 @@
 #pragma once
-// #include "commons.h"
+#include "Origami/commons.h"
+#include "Origami/merge_tree.h"
 #include "config.h"
 #include "partition.h"
-#include "Origami/merge_tree.h"
 
-#include <spdlog/spdlog.h>
+#include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
+#include <spdlog/spdlog.h>
 #include <sys/mman.h>
 
 constexpr uint64_t CACHE_LINE_SIZE = 64;
-constexpr uint64_t MERGE_BUF_SIZE = 1 << 20;
-constexpr uint64_t L1_CACHE_SIZE = 1 << 20;
-constexpr uint64_t L2_CACHE_SIZE = 1 << 20;
+
+constexpr uint64_t L1_CACHE_SIZE = 1 << 12;
+constexpr uint64_t L2_CACHE_SIZE = 1 << 12;
+
+constexpr uint64_t MERGE_BUF_SIZE = L1_CACHE_SIZE + L2_CACHE_SIZE;
 
 template<typename RecordType>
 struct MergeTask {
@@ -50,24 +53,37 @@ template<typename RecordType>
 void run_merge_avx_512(MergeTask<RecordType> *task) {
     using Regtype = avx512;
     using ItemType = KeyValue<i64, i64>;
+
     int num_streams = task->start_ptrs.size();
     std::vector<ItemType*> end_ptrs;
     std::vector<ItemType*> start_ptrs;
-    uint64_t total_records;
+    task->total_records_sorted = 0;
 
     for (int i=0; i<num_streams; i++) {
-        uint64_t start_align = uint64_t(task->start_ptrs[i]) & (CACHE_LINE_SIZE-1);
-        // uint8_t *start_ptr = (uint8_t*) task->start_ptrs[i] - start_align;
-        task->start_ptrs[i] -= start_align/sizeof(RecordType);
-        uint8_t *end_ptr = (uint8_t*) task->start_ptrs[i] + task->num_records[i] * sizeof(RecordType);
-        uint64_t end_align = CACHE_LINE_SIZE - (uint64_t)end_ptr & (CACHE_LINE_SIZE - 1);
+        ItemType *end_ptr = (ItemType*) task->start_ptrs[i] + task->num_records[i];
+        if (task->num_records[i] == 0) {
+            end_ptrs.push_back(end_ptr);
+            start_ptrs.push_back((ItemType*)task->start_ptrs[i]);
+            continue;
+        }
 
-        end_ptrs.push_back((ItemType*)end_ptr);
+        uint64_t start_offset = (uint64_t(task->start_ptrs[i]) & (CACHE_LINE_SIZE - 1));
+        uint64_t start_align = (start_offset == 0) ? 0 : (CACHE_LINE_SIZE - start_offset);
+        uint64_t end_align = (uint64_t)end_ptr & (CACHE_LINE_SIZE - 1);
+        spdlog::info("Start align: {}, end align: {}, num_records: {}", start_align, end_align, task->num_records[i]);
+        
+        task->start_ptrs[i] += (start_align/sizeof(RecordType));
+        end_ptr -= (end_align / sizeof(ItemType));
+
+        end_ptrs.push_back(end_ptr);
         start_ptrs.push_back((ItemType*)task->start_ptrs[i]);
-        task->total_records_sorted += task->num_records[i] + (start_align + end_align) / sizeof(RecordType);
+        task->total_records_sorted += task->num_records[i] - (start_align + end_align) / sizeof(RecordType);
+        assert(std::is_sorted((ItemType*) task->start_ptrs[i], (ItemType*) end_ptr));
+        // spdlog::info("Run sorted: {}", sorted);
     }
+    spdlog::info("Number of elements after trimming unaligned ones: {}", task->total_records_sorted);
 
-    task->output = mmap(NULL, task->total_records_sorted * sizeof(RecordType), PROT_READ | PROT_WRITE, MAP_ANONYMOUS, -1, 0);
+    int ret = posix_memalign(&task->output, 4096, task->total_records_sorted * sizeof(RecordType));
     assert(task->output != nullptr);
 
     uint32_t tree_height = std::log2(num_streams);
@@ -77,9 +93,15 @@ void run_merge_avx_512(MergeTask<RecordType> *task) {
     } else {
         merge_tree = std::make_unique<origami_merge_tree::MergeTreeOdd<Regtype, ItemType>>();
     }
-    void *intermediate_buf = mmap(NULL, MERGE_BUF_SIZE, PROT_READ | PROT_WRITE, MAP_ANONYMOUS, -1, 0);
-    assert(intermediate_buf != NULL);
-    merge_tree->merge_init(num_streams, (ItemType*)intermediate_buf, L1_CACHE_SIZE/sizeof(RecordType), L2_CACHE_SIZE/sizeof(RecordType));
-    merge_tree->merge((ItemType**)start_ptrs.data(), (ItemType**)end_ptrs.data(), (ItemType*)task->output, total_records, L1_CACHE_SIZE/sizeof(ItemType), 
-        L2_CACHE_SIZE/sizeof(ItemType), nullptr, num_streams);
+    void *intermediate_buf;
+    ret = posix_memalign(&intermediate_buf, 4096, MERGE_BUF_SIZE * 128);
+    assert(ret == 0);
+    merge_tree->merge_init(num_streams, (ItemType*)intermediate_buf, L1_CACHE_SIZE, L2_CACHE_SIZE);
+    merge_tree->merge((ItemType**)start_ptrs.data(), (ItemType**)end_ptrs.data(), 
+        (ItemType*)task->output, task->total_records_sorted, 
+        L1_CACHE_SIZE, L2_CACHE_SIZE, 
+        (ItemType*)intermediate_buf, num_streams);
+
+    bool sorted = std::is_sorted((RecordType*)task->output, (RecordType*)task->output + task->total_records_sorted);
+    spdlog::info("Sorted: {}", sorted);
 }

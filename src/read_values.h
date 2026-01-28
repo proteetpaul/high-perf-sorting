@@ -5,9 +5,9 @@
 #include <cstdlib>
 #include <unistd.h>
 
-constexpr uint32_t BLOCK_ALIGN = 4096;
+#include "spdlog/spdlog.h"
 
-constexpr uint32_t CHUNK_SIZE = 1 << 22; // 4MB
+constexpr uint32_t BLOCK_ALIGN = 4096;
 
 struct ValueReader {
     int fd;
@@ -15,26 +15,28 @@ struct ValueReader {
     void *current_chunk;
     uint64_t file_offset;
     uint64_t chunk_offset;
+    uint64_t chunk_size;
 
     ValueReader(int fd, uint32_t value_length, uint64_t start_offset) {
         this->fd = fd;
         this->value_length = value_length;
+        chunk_size = value_length * BLOCK_ALIGN;        // Avoid boundary conditions
 
-        int res = posix_memalign(&current_chunk, BLOCK_ALIGN, CHUNK_SIZE);
+        int res = posix_memalign(&current_chunk, BLOCK_ALIGN, chunk_size);
         assert(res == 0);
         uint64_t block_aligned_offset = (start_offset * value_length) / BLOCK_ALIGN * BLOCK_ALIGN;
-        res = pread64(fd, current_chunk, CHUNK_SIZE, block_aligned_offset);
+        res = pread64(fd, current_chunk, chunk_size, block_aligned_offset);
         assert(res >= 0);
-        file_offset = block_aligned_offset + CHUNK_SIZE;
+        file_offset = block_aligned_offset + chunk_size;
 
         chunk_offset = start_offset - block_aligned_offset;
     }
 
     void *read_next() {
-        if (chunk_offset == CHUNK_SIZE) {
-            int res = pread64(fd, current_chunk, CHUNK_SIZE, file_offset);
+        if (chunk_offset == chunk_size) {
+            int res = pread64(fd, current_chunk, chunk_size, file_offset);
             assert(res >= 0);
-            file_offset += CHUNK_SIZE;
+            file_offset += chunk_size;
             chunk_offset = 0;
         }
         uint8_t* res = (uint8_t*)current_chunk + chunk_offset;

@@ -8,6 +8,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 add_subdirectory(spdlog)
 
 include_directories(spdlog/include)
+include_directories(origami-sort)
 add_subdirectory(src)
 
 add_subdirectory(ips4o)
