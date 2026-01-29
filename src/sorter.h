@@ -32,7 +32,6 @@
 #include "ips4o.hpp"
 
 #include <spdlog/spdlog.h>
-#include <boost/align/aligned_allocator.hpp>
 
 typedef uint64_t IndexType;
 
@@ -52,9 +51,6 @@ struct TimingInfo {
     float create_intermediate_value_runs;
     float merge_in_memory;
 };
-
-template <typename T>
-using AlignedVector = std::vector<T, boost::alignment::aligned_allocator<T, 64>>;
 
 template <typename RecordType>
 class Sorter {
