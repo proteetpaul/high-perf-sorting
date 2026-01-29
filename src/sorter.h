@@ -103,7 +103,8 @@ class Sorter {
     void generate_run_for_merge_sort(std::vector<RecordType> &run,  
         void *sorted_values, std::vector<KeyIndexPair> &key_index_pairs, int run_id);
 
-    void write_back_values_post_merge(std::vector<int> &fds, std::vector<MergeTask<KeyIndexPair>> &tasks);
+    void write_back_values_post_merge(std::vector<int> &fds, std::vector<MergeTask<KeyIndexPair>> &tasks,
+        std::vector<std::vector<KeyIndexPair>> &key_index_pairs);
 
 public:
     Sorter(Config &&config) {
@@ -119,8 +120,8 @@ public:
     void print_timing_stats() {
         spdlog::info("Read input: {} ms", timing_info.input_read);
         spdlog::info("Read merge phase: {} ms", timing_info.merge_read);
-        spdlog::info("Write sorted runs: {} ms", timing_info.intermediate_write);
-        spdlog::info("Write output: {} ms", timing_info.output_write);
+        spdlog::info("Write sorted runs to disk: {} ms", timing_info.intermediate_write);
+        spdlog::info("Write output to disk: {} ms", timing_info.output_write);
         spdlog::info("Sorting time: {} ms", timing_info.sort_time);
         spdlog::info("Key-value separation: {} ms", timing_info.value_separation);
         spdlog::info("Value write back (for one-pass sort): {} ms", timing_info.value_write_back);
@@ -135,7 +136,6 @@ void Sorter<RecordType>::generate_key_index_pairs(std::vector<RecordType> &vec,
         std::vector<KeyIndexPair> &key_index_pairs, void* value_buffer, bool separate_values) {
     spdlog::debug("Start separating values from keys");
     auto start = std::chrono::high_resolution_clock::now();
-    // TODO(): Maybe unroll loop??
     #pragma omp parallel for num_threads(config.num_threads)
     for (uint64_t i=0; i<(uint64_t)vec.size(); i++) {
         key_index_pairs[i].key = __builtin_bswap64(vec[i].key);
@@ -330,10 +330,13 @@ void Sorter<RecordType>::sort_single_run(std::vector<RecordType> &run) {
         void *value_buffer;
         int ret = posix_memalign(&value_buffer, 64, RecordType::VALUE_LENGTH * run.size());
         assert(ret == 0);
+        memset(value_buffer, 0, RecordType::VALUE_LENGTH * run.size());
 
         generate_key_index_pairs(run, key_index_pairs, value_buffer, true);
         in_place_sort<IndexLength>(key_index_pairs);
         write_back_values(run, key_index_pairs, value_buffer);
+
+        spdlog::info("is sorted: {}", std::is_sorted(run.begin(), run.end()));
         free(value_buffer);
     } else {
         in_place_sort<RecordType::VALUE_LENGTH>(run);
@@ -347,6 +350,7 @@ void Sorter<RecordType>::generate_run_for_merge_sort(
     assert(config.separate_values);
     assert((run.size() * sizeof(RecordType)) % 64 == 0);
     key_index_pairs.resize(run.size());
+    memset(key_index_pairs.data(), 0, run.size() * sizeof(KeyIndexPair));
 
     generate_key_index_pairs(run, key_index_pairs, nullptr, false);
     in_place_sort<IndexLength>(key_index_pairs);
@@ -394,20 +398,23 @@ void Sorter<RecordType>::sort() {
         void *sorted_values;
         int ret = posix_memalign(&sorted_values, 4096, RecordType::VALUE_LENGTH * v.size());
         assert(ret == 0);
-        generate_run_for_merge_sort(v, &sorted_values, key_index_pairs[i], i);
+        memset(sorted_values, 0, RecordType::VALUE_LENGTH * v.size());
+        generate_run_for_merge_sort(v, sorted_values, key_index_pairs[i], i);
         fds.push_back(
             write_to_disk(sorted_values, v.size() * RecordType::VALUE_LENGTH, i)
         );
     }
     std::vector<MergeTask<KeyIndexPair>> tasks;
     merge(key_index_pairs, config.run_size_bytes / sizeof(RecordType), &tasks);
-    write_back_values_post_merge(fds, tasks);
+    write_back_values_post_merge(fds, tasks, key_index_pairs);
 }
 
 template <typename RecordType>
 std::vector<RecordType> Sorter<RecordType>::read_input_chunk(uint64_t chunk_id) {
     spdlog::debug("Start reading input");
     std::vector<RecordType> output_vector(config.run_size_bytes / ELEM_SIZE);
+    // Avoid minor page faults during read
+    memset((void*)output_vector.data(), 0, config.run_size_bytes);
     
     auto start = std::chrono::high_resolution_clock::now();
     uint64_t length = config.run_size_bytes;
@@ -454,16 +461,20 @@ void Sorter<RecordType>::merge(
     auto start = std::chrono::high_resolution_clock::now();
 
     *tasks = create_tasks<KeyIndexPair>(sorted_runs, run_length, config.num_threads);
-    spdlog::info("Created tasks");
+    spdlog::info("Created {} tasks", tasks->size());
 
     std::vector<std::thread> threads;
+    bool result_sorted[tasks->size()];
     for (int i=0; i<tasks->size(); i++) {
-        threads.emplace_back(std::thread(run_merge_avx_512<KeyIndexPair>, &tasks->at(i)));
+        threads.emplace_back(std::thread(run_merge_avx_512<KeyIndexPair>, &tasks->at(i), result_sorted + i));
     }
+    bool all_true = true;
     for (int i=0; i<tasks->size(); i++) {
         threads[i].join();
+        all_true &= result_sorted[i];
+        spdlog::debug("Task {} result sorted: {}", i, result_sorted[i]);
     }
-    spdlog::info("Finished merging key-stream id pairs");
+    spdlog::info("Finished merging key-stream id pairs. All sorted: {}", all_true);
 
     auto end = std::chrono::high_resolution_clock::now();
     timing_info.merge_in_memory = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
@@ -491,21 +502,31 @@ void Sorter<RecordType>::write_output_chunk(void *buffer, uint64_t length) {
 
 template <typename RecordType>
 void Sorter<RecordType>::write_back_values_post_merge(std::vector<int> &fds, 
-        std::vector<MergeTask<KeyIndexPair>> &tasks) {
+        std::vector<MergeTask<KeyIndexPair>> &tasks,
+        std::vector<std::vector<KeyIndexPair>> &key_index_pairs) {
     spdlog::debug("Start writing back values post merge");
-    auto start = std::chrono::high_resolution_clock::now();
+    
     uint32_t num_streams = tasks[0].start_ptrs.size();
+    std::vector<void*> output_ptrs;
 
-    #pragma omp parallel for num_threads(config.num_threads)
     for (int i=0; i<tasks.size(); i++) {
         void *sorted_output;
         uint64_t output_size = sizeof(RecordType) * tasks[i].total_records_sorted;
-        int ret = posix_memalign(&sorted_output, BLOCK_ALIGN, (output_size + BLOCK_ALIGN - 1) / BLOCK_ALIGN * BLOCK_ALIGN);
+        uint64_t alloc_sz = (output_size + BLOCK_ALIGN - 1) / BLOCK_ALIGN * BLOCK_ALIGN;
+        int ret = posix_memalign(&sorted_output, BLOCK_ALIGN, alloc_sz);
         assert(ret == 0);
+        memset(sorted_output, 0, alloc_sz);
+        output_ptrs.push_back(sorted_output);
+    }
+    auto start = std::chrono::high_resolution_clock::now();
 
+    #pragma omp parallel for num_threads(config.num_threads)
+    for (int i=0; i<tasks.size(); i++) {
+        void *sorted_output = output_ptrs[i];
         std::vector<ValueReader> value_readers;
         for (int j=0; j<num_streams; j++) {
-            ValueReader value_reader {fds[i], RecordType::VALUE_LENGTH, uint64_t(tasks[i].start_ptrs[j] - tasks[0].start_ptrs[j])};
+            uint64_t record_offset = uint64_t(tasks[i].start_ptrs[j] - key_index_pairs[j].data());
+            ValueReader value_reader {fds[j], RecordType::VALUE_LENGTH, record_offset};
             value_readers.push_back(value_reader);
         }
 

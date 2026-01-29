@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <pthread.h>
 #include <sched.h>
+#include <spdlog/spdlog.h>
 
 #include "key_value_pair.h"
 #include "sorter.h"
@@ -177,6 +178,7 @@ void pin_current_thread() {
 }
 
 int main(int argc, char* argv[]) {
+    spdlog::set_level(spdlog::level::info);
     // pin_current_thread();
     ParsedArgs args;
     int parse_result = parseArguments(argc, argv, args);

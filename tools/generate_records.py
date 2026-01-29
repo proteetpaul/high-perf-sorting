@@ -109,6 +109,12 @@ def write_uniform_records(
             for _ in range(batch_count):
                 # Key
                 key = generate_uniform_bytes(key_bytes)
+                # Zero out the most significant bit (bit 7 of the first byte)
+                # This is currently a hack to avoid issues with Origami Sorter since it doesn't handle negative keys.
+                if key_bytes > 0:
+                    key = bytearray(key)
+                    key[0] &= 0x7F  # Clear MSB: 0x7F = 0b01111111
+                    key = bytes(key)
                 batch_buffer[offset : offset + key_bytes] = key
                 offset += key_bytes
                 # Value

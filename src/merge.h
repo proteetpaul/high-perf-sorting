@@ -50,7 +50,7 @@ std::vector<MergeTask<RecordType>> create_tasks(std::vector<std::vector<RecordTy
 }
 
 template<typename RecordType>
-void run_merge_avx_512(MergeTask<RecordType> *task) {
+void run_merge_avx_512(MergeTask<RecordType> *task, bool *result_sorted) {
     using Regtype = avx512;
     using ItemType = KeyValue<i64, i64>;
 
@@ -102,5 +102,5 @@ void run_merge_avx_512(MergeTask<RecordType> *task) {
         (ItemType*)intermediate_buf, num_streams);
 
     bool sorted = std::is_sorted((RecordType*)task->output, (RecordType*)task->output + task->total_records_sorted);
-    spdlog::info("Sorted: {}", sorted);
+    *result_sorted = sorted;
 }

@@ -69,8 +69,8 @@ std::pair<std::vector<std::vector<RecordType*>>, std::vector<std::vector<uint64_
     }
     auto left_res = generate_partitions(start_ptrs, left_lengths, depth-1);
     auto right_res = generate_partitions(right_start_ptrs, right_lengths, depth-1);
-    left_res.first.insert(right_res.first.begin(), right_res.first.end(), right_res.first.end());
+    left_res.first.insert(left_res.first.end(), right_res.first.begin(), right_res.first.end());
     left_res.second.insert(left_res.second.end(), right_res.second.begin(), right_res.second.end());
 
-    return std::make_pair<>(left_res.first, left_res.second);
+    return std::make_pair(left_res.first, left_res.second);
 }
