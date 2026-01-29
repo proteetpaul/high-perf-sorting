@@ -440,11 +440,18 @@ int Sorter<RecordType>::write_to_disk(void *buf, uint64_t num_bytes, uint64_t ch
     std::string file_name = config.intermediate_file_prefix + "-chunk-" + std::to_string(chunk_idx);
     int fd = open(file_name.c_str(), O_CREAT | O_RDWR | O_TRUNC | O_DIRECT, 0644);
     assert(fd != -1);
-    auto start = std::chrono::high_resolution_clock::now();
 
-    
-    auto ret = pwrite64(fd, buf, num_bytes, 0);
-    assert(ret == num_bytes);
+    spdlog::info("Writing {} bytes to file: {}", num_bytes, file_name);
+    uint64_t length = num_bytes;
+    auto start = std::chrono::high_resolution_clock::now();
+    uint64_t offset = 0;
+    while (length > 0) {
+        uint64_t bytes_to_write = std::min(length, MAX_IO_CHUNK_SIZE);
+        uint64_t ret = pwrite64(fd, (uint8_t*)buf + offset, bytes_to_write, offset);
+        assert(ret == bytes_to_write);
+        offset += bytes_to_write;
+        length -= bytes_to_write;
+    }
     auto end = std::chrono::high_resolution_clock::now();
 
     timing_info.intermediate_write += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
@@ -487,7 +494,7 @@ void Sorter<RecordType>::write_output_chunk(void *buffer, uint64_t length) {
 
     while (length > 0) {
         uint64_t bytes_to_write = std::min(length, MAX_IO_CHUNK_SIZE);
-        uint64_t ret = pwrite64(write_fd, buffer, bytes_to_write, output_file_offset);
+        uint64_t ret = pwrite64(write_fd, (uint8_t*)buffer + output_file_offset, bytes_to_write, output_file_offset);
         assert(ret == bytes_to_write);
         output_file_offset += bytes_to_write;
         length -= bytes_to_write;

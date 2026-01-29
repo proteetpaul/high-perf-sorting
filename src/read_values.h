@@ -20,7 +20,7 @@ struct ValueReader {
     ValueReader(int fd, uint32_t value_length, uint64_t start_offset) {
         this->fd = fd;
         this->value_length = value_length;
-        chunk_size = value_length * BLOCK_ALIGN * 2;        // Avoid boundary conditions
+        chunk_size = value_length * BLOCK_ALIGN * 3;        // Avoid boundary conditions
 
         int res = posix_memalign(&current_chunk, BLOCK_ALIGN, chunk_size);
         assert(res == 0);
