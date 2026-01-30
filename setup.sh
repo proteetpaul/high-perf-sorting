@@ -10,6 +10,8 @@ mkdir -p build && cd build
 cmake -DIPS4O_DISABLE_PARALLEL=ON ..
 cmake --build . --parallel
 
+export NIX_ENFORCE_NO_NATIVE=0
+
 cd $HOME
 wget https://downloadmirror.intel.com/866182/mlc_v3.12.tgz
 tar -xvzf mlc_v3.12.tgz
