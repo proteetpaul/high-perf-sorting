@@ -1,4 +1,4 @@
-sudo apt -y install libtbb-dev cmake python3-numpy python3-pandas libboost-all-dev
+sudo apt -y install libtbb-dev cmake python3-numpy python3-pandas libboost-all-dev libpfm4-dev
 
 echo -1 | sudo tee /proc/sys/kernel/perf_event_paranoid
 export PCM_NO_MSR=1
@@ -10,3 +10,8 @@ mkdir -p build && cd build
 cmake -DIPS4O_DISABLE_PARALLEL=ON ..
 cmake --build . --parallel
 
+export NIX_ENFORCE_NO_NATIVE=0
+
+cd $HOME
+wget https://downloadmirror.intel.com/866182/mlc_v3.12.tgz
+tar -xvzf mlc_v3.12.tgz

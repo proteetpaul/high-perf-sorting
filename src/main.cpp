@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <pthread.h>
 #include <sched.h>
+#include <spdlog/spdlog.h>
 
 #include "key_value_pair.h"
 #include "sorter.h"
@@ -177,6 +178,7 @@ void pin_current_thread() {
 }
 
 int main(int argc, char* argv[]) {
+    spdlog::set_level(spdlog::level::info);
     // pin_current_thread();
     ParsedArgs args;
     int parse_result = parseArguments(argc, argv, args);
@@ -203,15 +205,15 @@ int main(int argc, char* argv[]) {
         Sorter<KeyValuePair<8, 8>> sorter(std::move(config));
         sorter.sort();
         sorter.print_timing_stats();
-    } 
-    else if (args.key_size == 8 && args.value_size == 24) {
-        Sorter<KeyValuePair<8, 24>> sorter(std::move(config));
-        sorter.sort();
-        sorter.print_timing_stats();
-    } else if (args.key_size == 8 && args.value_size == 56) {
-        Sorter<KeyValuePair<8, 56>> sorter(std::move(config));
-        sorter.sort();
-        sorter.print_timing_stats();
+    // } 
+    // else if (args.key_size == 8 && args.value_size == 24) {
+    //     Sorter<KeyValuePair<8, 24>> sorter(std::move(config));
+    //     sorter.sort();
+    //     sorter.print_timing_stats();
+    // } else if (args.key_size == 8 && args.value_size == 56) {
+    //     Sorter<KeyValuePair<8, 56>> sorter(std::move(config));
+    //     sorter.sort();
+    //     sorter.print_timing_stats();
     } else if (args.key_size == 8 && args.value_size == 120) {
         Sorter<KeyValuePair<8, 120>> sorter(std::move(config));
         sorter.sort();
