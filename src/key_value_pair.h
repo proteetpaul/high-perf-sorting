@@ -53,26 +53,26 @@ template <uint32_t ValueLength>
 struct KeyValuePair<8, ValueLength> {
     static constexpr uint32_t KEY_LENGTH = 8;
     static constexpr uint32_t VALUE_LENGTH = ValueLength;
-    uint64_t key;
+    int64_t key;
     char value[ValueLength];
 
     KeyValuePair() {}
 
     static KeyValuePair<8, ValueLength> inf() {
         KeyValuePair<8, ValueLength> k;
-        k.key = uint64_t(-1);
+        k.key = INT64_MAX;
         return k;
     }
 
     static KeyValuePair<8, ValueLength> from_ptr(void *ptr) {
         KeyValuePair<8, ValueLength> k;
-        std::memcpy(k.value, reinterpret_cast<char*>(ptr) + sizeof(uint64_t), ValueLength);
-        k.key = *reinterpret_cast<uint64_t*>(ptr);
+        std::memcpy(k.value, reinterpret_cast<char*>(ptr) + sizeof(int64_t), ValueLength);
+        k.key = *reinterpret_cast<int64_t*>(ptr);
         return k;
     }
 
     bool operator < (const KeyValuePair<8, ValueLength> &other) const {
-        return  __builtin_bswap64(this->key) < __builtin_bswap64(other.key);
+        return  this->key < other.key;
     }
 
     bool operator == (const KeyValuePair<8, ValueLength> &other) const {
@@ -80,7 +80,7 @@ struct KeyValuePair<8, ValueLength> {
     }
 
     void set_key(void *key) {
-        this->key = *reinterpret_cast<uint64_t*>(key);
+        this->key = *reinterpret_cast<int64_t*>(key);
     }
 
     void set_value(void *value) {
@@ -92,7 +92,7 @@ template <>
 struct KeyValuePair<8, 4> {
     static constexpr uint32_t KEY_LENGTH = 8;
     static constexpr uint32_t VALUE_LENGTH = 4;
-    uint64_t key;
+    int64_t key;
 
     uint32_t value;
 
@@ -100,14 +100,14 @@ struct KeyValuePair<8, 4> {
 
     static KeyValuePair<8, 4> inf() {
         KeyValuePair<8, 4> k;
-        k.key = uint64_t(-1);
+        k.key = INT64_MAX;
         return k;
     }
 
     static KeyValuePair<8, 4> from_ptr(void *ptr) {
         KeyValuePair<8, 4> k;
-        k.key = *reinterpret_cast<uint64_t*>(ptr);
-        k.value = *reinterpret_cast<uint32_t*>((uint8_t*)ptr + sizeof(uint64_t));
+        k.key = *reinterpret_cast<int64_t*>(ptr);
+        k.value = *reinterpret_cast<uint32_t*>((uint8_t*)ptr + sizeof(int64_t));
         return k;
     }
 
@@ -120,7 +120,7 @@ struct KeyValuePair<8, 4> {
     }
 
     void set_key(void *key) {
-        this->key = *reinterpret_cast<uint64_t*>(key);
+        this->key = *reinterpret_cast<int64_t*>(key);
     }
 
     void set_value(void *value) {
@@ -129,37 +129,65 @@ struct KeyValuePair<8, 4> {
 };
 
 template <>
-struct KeyValuePair<8, 0> {
+struct KeyValuePair<8, 8> {
     static constexpr uint32_t KEY_LENGTH = 8;
-    static constexpr uint32_t VALUE_LENGTH = 0;
-    uint64_t key;
+    static constexpr uint32_t VALUE_LENGTH = 8;
+    int64_t key;
+
+    uint64_t value;
 
     KeyValuePair() {}
 
-    static KeyValuePair<8, 0> inf() {
-        KeyValuePair<8, 0> k;
-        k.key = uint64_t(-1);
+    static KeyValuePair<8, 8> inf() {
+        KeyValuePair<8, 8> k;
+        k.key = INT64_MAX;
         return k;
     }
 
-    static KeyValuePair<8, 0> from_ptr(void *ptr) {
-        KeyValuePair<8, 0> k;
-        k.key = *reinterpret_cast<uint64_t*>(ptr);
+    static KeyValuePair<8, 8> from_ptr(void *ptr) {
+        KeyValuePair<8, 8> k;
+        k.key = *reinterpret_cast<int64_t*>(ptr);
+        k.value = *reinterpret_cast<uint64_t*>((uint8_t*)ptr + sizeof(int64_t));
         return k;
     }
 
-    bool operator < (const KeyValuePair<8, 0> &other) const {
-        return __builtin_bswap64(this->key) < __builtin_bswap64(other.key);
+    bool operator < (const KeyValuePair<8, 8> &other) const {
+        return this->key < other.key;
     }
 
-    bool operator == (const KeyValuePair<8, 0> &other) const {
+    bool operator == (const KeyValuePair<8, 8> &other) const {
         return this->key == other.key;
     }
 
     void set_key(void *key) {
-        this->key = *reinterpret_cast<uint64_t*>(key);
+        this->key = *reinterpret_cast<int64_t*>(key);
     }
 
     void set_value(void *value) {
+        this->value = *reinterpret_cast<uint64_t*>(value);
     }
 };
+
+template<typename RecordType>
+RecordType mean(RecordType &r1, RecordType &r2) {
+    static_assert(RecordType::KEY_LENGTH == 8);
+    RecordType result;
+    result.key = r1.key / 2 + r2.key / 2 + (r1.key % 2 + r2.key % 2) / 2;
+    return result;
+}
+
+template<typename RecordType>
+RecordType increment(RecordType &r) {
+    static_assert(RecordType::KEY_LENGTH == 8);
+    RecordType result = r;
+    result.key++;
+    return result;
+}
+
+template<typename RecordType>
+RecordType decrement(RecordType &r) {
+    static_assert(RecordType::KEY_LENGTH == 8);
+    RecordType result = r;
+    result.key--;
+    return result;
+}
