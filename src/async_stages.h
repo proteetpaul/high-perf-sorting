@@ -49,13 +49,17 @@ void extract_keys_from_chunk(
     KeyValuePair<RecordType::KEY_LENGTH, sizeof(uint64_t)>* key_index_pairs
 ) {
     constexpr uint32_t ELEM_SIZE = sizeof(RecordType);
-    uint64_t offset = chunk_id * num_records_in_chunk;
     static_assert(RecordType::KEY_LENGTH == 8, "Size of key should be 8 bytes");
+
+    const uint64_t num_records_per_full_chunk = DEFAULT_READ_CHUNK_BYTES / ELEM_SIZE;
+    uint64_t idx = chunk_id * num_records_per_full_chunk;
+    auto ptr = (RecordType*) input_buf + chunk_id * num_records_per_full_chunk;
+
     for (uint64_t i = 0; i < num_records_in_chunk; ++i) {
-        uint64_t idx = offset + i;
-        const uint8_t* ptr = (uint8_t*)input_buf + chunk_id * num_records_in_chunk * ELEM_SIZE;
-        key_index_pairs[idx].key = __builtin_bswap64(*((uint64_t*)ptr));
+        key_index_pairs[idx].key = __builtin_bswap64(ptr->key);
         key_index_pairs[idx].set_value(&idx);
+        ptr++;
+        idx++;
     }
 }
 
@@ -94,33 +98,26 @@ void read_run_and_extract_keys(int fd, uint64_t run_id, uint64_t run_size_bytes,
 
     io_uring_utils::UringRing ring(PREFETCH_DEPTH);
 
-    std::queue<uint32_t> free_slots;
-    for (uint32_t i = 0; i < PREFETCH_DEPTH; ++i) {
-        free_slots.push(i);
-    }
-
     auto start = std::chrono::high_resolution_clock::now();
     uint64_t chunk_id = 0;
     uint64_t completed = 0;
+    uint32_t free_slots = PREFETCH_DEPTH;
 
     while (completed < num_chunks) {
-        while (chunk_id < num_chunks && !free_slots.empty()) {
-            uint32_t slot_id = free_slots.front();
-            free_slots.pop();
-
-            uint64_t chunk_offset = chunk_id * read_chunk_bytes;
+        while (chunk_id < num_chunks && free_slots > 0) {
+            uint64_t chunk_offset = chunk_id * DEFAULT_READ_CHUNK_BYTES;
             void *buf = run_buffer + chunk_offset;
-            uint64_t chunk_bytes = std::min(read_chunk_bytes, run_size_bytes - chunk_offset);
+            uint64_t chunk_bytes = std::min(DEFAULT_READ_CHUNK_BYTES, run_size_bytes - chunk_offset);
             uint64_t read_size = align_up_block(chunk_bytes);
 
             bool ok = ring.prepare_read(fd, buf, static_cast<uint32_t>(read_size),
                                       file_offset + chunk_offset,
-                                      (chunk_id << 32) | slot_id);
+                                      chunk_id << 32);
             if (!ok) {
                 spdlog::error("submit_read failed for chunk {}", chunk_id);
-                free_slots.push(slot_id);
                 break;
             }
+            free_slots--;
             chunk_id++;
         }
         ring.submit_and_wait(1);
@@ -133,24 +130,21 @@ void read_run_and_extract_keys(int fd, uint64_t run_id, uint64_t run_size_bytes,
 
         auto p = process_cqe(cqe);
         uint32_t chunk_id = p.first >> 32;
-        uint32_t slot_id = p.first & 0xffff;
         if (p.second < 0) {
             spdlog::error("read chunk {} failed: {}", chunk_id, p.second);
-            free_slots.push(slot_id);
             ring.mark_cqe_seen(cqe);
             completed++;
             continue;
         }
+        free_slots++;
 
-        uint64_t done_chunk_offset = chunk_id * read_chunk_bytes;
-        uint64_t done_chunk_bytes = std::min(read_chunk_bytes, run_size_bytes - done_chunk_offset);
+        uint64_t done_chunk_offset = chunk_id * DEFAULT_READ_CHUNK_BYTES;
+        uint64_t done_chunk_bytes = std::min(DEFAULT_READ_CHUNK_BYTES, run_size_bytes - done_chunk_offset);
         uint64_t num_records_chunk = done_chunk_bytes / ELEM_SIZE;
 
         extract_keys_from_chunk<RecordType>(
             run_buffer, chunk_id, num_records_chunk, key_index_pairs
         );
-
-        free_slots.push(slot_id);
         ring.mark_cqe_seen(cqe);
         completed++;
     }
@@ -196,11 +190,11 @@ public:
         KeyIndexPair* key_index_pairs
     ): thread_idx(thread_idx), values_per_chunk(values_per_chunk), 
             run_idx(run_idx), input_buffer(input_buffer), key_index_pairs(key_index_pairs) {
-        fd = dup(fd);
+        this->fd = dup(fd);
         ring = std::make_unique<io_uring_utils::UringRing>(PREFETCH_DEPTH);
         write_bufs.resize(NUM_SLOTS);
         for (uint32_t i=0; i<NUM_SLOTS; i++) {
-            posix_memalign(&write_bufs[i], BLOCK_SIZE, WRITE_IO_BYTES);
+            posix_memalign(&write_bufs[i], io_uring_utils::BLOCK_ALIGN, WRITE_IO_BYTES);
         }
     }
 
@@ -238,7 +232,6 @@ public:
     
         uint64_t num_writes = bytes_to_write / WRITE_IO_BYTES;
         uint64_t completed = 0ll;
-        uint32_t pending = 0;
         uint32_t to_submit = 0;
         uint64_t next_write = 0ll;
         uint64_t file_offset = thread_idx * bytes_to_write;
@@ -264,14 +257,26 @@ public:
                 }
 
                 struct io_uring_cqe* cqe = nullptr;
+                while (ring->peek_cqe(&cqe)) {
+                    auto p = process_cqe(cqe);
+                    uint32_t slot_id = p.first >> 32;
+                    uint32_t write_id = p.first & 0xFFFFFFFF;
+                    if (p.second < 0) {
+                        spdlog::error("write chunk {} failed: {}", write_id, p.second);
+                    }
+                    slots.push(slot_id);
+                    completed++;
+                    ring->mark_cqe_seen(cqe);
+                }
                 if (!ring->wait_cqe(&cqe)) {
                     spdlog::error("wait_cqe failed");
                     break;
                 }
                 auto p = process_cqe(cqe);
-                uint32_t slot_id = (uint32_t) (p.first & 0xffff);
+                uint32_t slot_id = p.first >> 32;
                 slots.push(slot_id);
-                int result = p.second;
+                completed++;
+                ring->mark_cqe_seen(cqe);
             }
         }
     }
@@ -345,7 +350,7 @@ public:
         if (states[next_buf_idx] == IoCompleted) {
             return std::nullopt;
         }
-        uint64_t user_data = (cur_buf_idx << 16) | next_buf_idx;
+        uint64_t user_data = (reader_id << 16) | next_buf_idx;
         io_uring_utils::ReadTask task {
             ptr[next_buf_idx], read_chunk_size, 
             fd, file_offset, user_data
@@ -376,7 +381,7 @@ class ValueWriterPostMerge {
     std::vector<std::unique_ptr<AsyncValueReader>> readers;
 
 public:
-    static constexpr uint32_t NUM_SLOTS = PREFETCH_DEPTH * 4;
+    static constexpr uint64_t NUM_SLOTS = PREFETCH_DEPTH * 4;
 
     static constexpr uint32_t BATCH_SIZE = 1;
 
@@ -414,7 +419,7 @@ public:
     void poll_completions() {
         struct io_uring_cqe *cqe;
         ring->wait_cqe(&cqe);
-        ring->peek_cqe(&cqe);
+
         if ((cqe->user_data >> 32) < NUM_SLOTS) {
             uint32_t slot = (cqe->user_data >> 32);
             slots.push(slot);
@@ -423,7 +428,7 @@ public:
             readers[reader_idx]->process_io_completion(cqe->user_data);
             auto task = readers[reader_idx]->get_next_io();
             if (task.has_value()) {
-                task.value().user_data |= reader_idx;
+                task.value().user_data |= (NUM_SLOTS << 32);
                 ring->prepare_read(task.value());
             }
         }
@@ -441,7 +446,7 @@ public:
         for (auto &reader: readers) {
             auto task = reader->get_next_io();
             if (task.has_value()) {
-                task.value().user_data |= i;
+                task.value().user_data |= (NUM_SLOTS << 32);
                 ring->prepare_read(task.value());
             }
             i++;
@@ -455,12 +460,12 @@ public:
             }
             uint32_t slot = slots.front();
             slots.pop();
-            uint64_t records_to_write = records_emitted + std::min(task->total_records_sorted - records_emitted, WRITE_IO_BYTES / sizeof(RecordType));
+            uint64_t num_records_in_batch = records_emitted + std::min(task->total_records_sorted - records_emitted, WRITE_IO_BYTES / sizeof(RecordType));
             RecordType *out_buf = reinterpret_cast<RecordType*>(write_bufs[slot]);
             uint64_t offset = 0;
 
-            while (records_emitted < records_to_write) {
-                out_buf->key = __builtin_bswap64(sorted_keys->key);
+            for (uint64_t i=0; i<num_records_in_batch; i++) {
+                out_buf[i].key = __builtin_bswap64(sorted_keys->key);
                 uint32_t stream_id = sorted_keys->value;
                 void *value = readers[stream_id]->get_next_value();
                 if (value == nullptr) [[unlikely]] {
@@ -468,15 +473,14 @@ public:
                         poll_completions();
                     }
                 }
-                std::memcpy(&out_buf->value, value, RecordType::VALUE_LENGTH);
-                out_buf++;
+                std::memcpy(&out_buf[i].value, value, RecordType::VALUE_LENGTH);
                 sorted_keys++;
-                records_emitted++;
             }
-            ring->prepare_write(out_fd, write_bufs[slot], records_to_write * sizeof(RecordType), 
+            ring->prepare_write(out_fd, write_bufs[slot], num_records_in_batch * sizeof(RecordType), 
                 out_file_offset, (uint64_t)slot << 32);
             ring->submit_and_wait(0);
-            out_file_offset += records_to_write * sizeof(RecordType);
+            out_file_offset += num_records_in_batch * sizeof(RecordType);
+            records_emitted += num_records_in_batch;
         }
     }
 };

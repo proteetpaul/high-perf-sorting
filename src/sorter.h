@@ -443,7 +443,6 @@ void Sorter<RecordType>::sort() {
             fds.push_back(
                 write_intermediate_values(sorted_values, v.size() * RecordType::VALUE_LENGTH, i)
             );
-            free(sorted_values);
         } else {
             #pragma omp parallel for num_threads(config.num_threads)
             for (int j=0; j<config.num_threads; j++) {
@@ -461,13 +460,14 @@ void Sorter<RecordType>::sort() {
 
             uint64_t values_per_chunk = v.size() / config.num_threads;
             assert(values_per_chunk % io_uring_utils::BLOCK_ALIGN == 0);
-            std::unique_ptr<ValueWriterPostSort<RecordType>> writers[config.num_threads];
+            std::vector<std::unique_ptr<ValueWriterPostSort<RecordType>>> writers;
 
             for (int j = 0; j < config.num_threads; j++) {
                 KeyIndexPair* key_index_buf = key_index_pairs[i].data() + j * values_per_chunk;
-                writers[i] = std::make_unique<ValueWriterPostSort<RecordType>>(
+                auto writer = std::make_unique<ValueWriterPostSort<RecordType>>(
                     write_fd, j, values_per_chunk, reinterpret_cast<uint8_t*>(v.data()), i, key_index_buf
                 );
+                writers.push_back(std::move(writer));
             }
 
             #pragma omp parallel for num_threads(config.num_threads)
@@ -476,6 +476,7 @@ void Sorter<RecordType>::sort() {
             }
         }
     }
+    free(sorted_values);
     std::vector<MergeTask<KeyIndexPair>> tasks;
     merge(key_index_pairs, config.run_size_bytes / sizeof(RecordType), &tasks);
     if (config.use_async) {
@@ -644,21 +645,20 @@ void Sorter<RecordType>::write_back_values_post_merge_async(std::vector<int> &fd
         start_ptrs.push_back(v.data());
     }
 
-    std::unique_ptr<ValueWriterPostMerge<RecordType>> writers[config.num_threads];
+    std::vector<std::unique_ptr<ValueWriterPostMerge<RecordType>>> writers;
     for (int i=0; i<config.num_threads; i++) {
         std::string path = config.output_file + "-task-" + std::to_string(i);
         int out_fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC | O_DIRECT, 0644);
         posix_fallocate64(out_fd, 0ll, sizeof(RecordType) * tasks[i].total_records_sorted);
         assert(out_fd != -1);
 
-        // ValueWriterPostMerge<RecordType> writer {&tasks[i], out_fd, fds, start_ptrs};
-        // writers.emplace_back(std::move(writer));
-        writers[i] = std::make_unique<ValueWriterPostMerge<RecordType>>(&tasks[i], out_fd, fds, start_ptrs);
+        auto writer = std::make_unique<ValueWriterPostMerge<RecordType>>(&tasks[i], out_fd, fds, start_ptrs);
+        writers.push_back(std::move(writer));
         close(out_fd);
     }
 
-    // #pragma omp parallel for num_threads(config.num_threads)
-    // for (int i=0; i<config.num_threads; i++) {
-    //     writers[i]->run();
-    // }
+    #pragma omp parallel for num_threads(config.num_threads)
+    for (int i=0; i<config.num_threads; i++) {
+        writers[i]->run();
+    }
 }
