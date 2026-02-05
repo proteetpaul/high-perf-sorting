@@ -190,7 +190,7 @@ public:
     ): thread_idx(thread_idx), values_per_chunk(values_per_chunk), 
             run_idx(run_idx), input_buffer(input_buffer), key_index_pairs(key_index_pairs) {
         this->fd = dup(fd);
-        ring = std::make_unique<io_uring_utils::UringRing>(PREFETCH_DEPTH);
+        // ring = std::make_unique<io_uring_utils::UringRing>(PREFETCH_DEPTH);
         write_bufs.resize(NUM_SLOTS);
         for (uint32_t i=0; i<NUM_SLOTS; i++) {
             int ret = posix_memalign(&write_bufs[i], io_uring_utils::BLOCK_ALIGN, WRITE_IO_BYTES);
@@ -225,6 +225,8 @@ public:
 
     void run() {
         spdlog::debug("Start writing out values post sort");
+        ring = std::make_unique<io_uring_utils::UringRing>(PREFETCH_DEPTH);
+
         std::queue<uint32_t> slots;
         for (uint32_t i=0; i<NUM_SLOTS; i++) {
             slots.push(i);
@@ -253,7 +255,7 @@ public:
 
             bool should_submit = slots.empty() || to_submit >= BATCH_SIZE || (next_write == num_writes);
             if (should_submit) {
-                int nr = (next_write == num_writes) ? static_cast<int>(num_writes - completed) : 1;
+                int nr = (next_write == num_writes) ? static_cast<int>(num_writes - completed) : slots.empty();
                 ring->submit_and_wait(nr);
                 to_submit = 0;
 
@@ -406,7 +408,7 @@ public:
         assert(in_fds.size() == start_ptrs.size());
         assert(in_fds.size() > 0 && "in_fds must not be empty");
         assert(WRITE_IO_BYTES % RecordType::VALUE_LENGTH == 0);
-        ring = std::make_unique<io_uring_utils::UringRing>(PREFETCH_DEPTH);
+        
         this->out_fd = dup(out_fd);
 
         for (int i=0; i<in_fds.size(); i++) {
@@ -459,6 +461,8 @@ public:
 
     void run() {
         spdlog::debug("Start post-merge ops");
+        ring = std::make_unique<io_uring_utils::UringRing>(PREFETCH_DEPTH);
+
         for (uint32_t i=0; i<NUM_SLOTS; i++) {
             slots.push(i);
         }

@@ -51,9 +51,10 @@ struct TimingInfo {
     float value_separation;
     float value_write_back;
     float value_write_back_post_merge;
-    float final_output_write;
     float create_intermediate_value_runs;
     float merge_in_memory;
+    float async_read_and_extract_keys;
+    float async_value_writer_post_sort;
 };
 
 
@@ -145,7 +146,10 @@ public:
         spdlog::info("Creation of intermediate value runs: {} ms", timing_info.create_intermediate_value_runs);
         spdlog::info("In-memory merge: {} ms", timing_info.merge_in_memory);
         spdlog::info("Write back values (after merge sort): {} ms", timing_info.value_write_back_post_merge);
-        spdlog::info("Write final output to disk (after merge sort): {} ms", timing_info.final_output_write);
+        if (config.use_async) {
+            spdlog::info("Async read and extract keys: {} ms", timing_info.async_read_and_extract_keys);
+            spdlog::info("Async value writer post sort: {} ms", timing_info.async_value_writer_post_sort);
+        }
     }
 };
 
@@ -449,6 +453,7 @@ void Sorter<RecordType>::sort() {
             memset(key_index_pairs[i].data(), 0, v.size() * sizeof(KeyIndexPair));
 
             uint64_t records_per_thread = (config.run_size_bytes / config.num_threads) / ELEM_SIZE;
+            auto start_read_extract = std::chrono::high_resolution_clock::now();
             #pragma omp parallel for num_threads(config.num_threads)
             for (int j=0; j<config.num_threads; j++) {
                 auto *record_ptr = v.data() + j * records_per_thread;
@@ -457,6 +462,8 @@ void Sorter<RecordType>::sort() {
                     read_fd, j, config.run_size_bytes / config.num_threads,
                     record_ptr, key_index_ptr);
             }
+            auto end_read_extract = std::chrono::high_resolution_clock::now();
+            timing_info.async_read_and_extract_keys += std::chrono::duration_cast<std::chrono::microseconds>(end_read_extract - start_read_extract).count() / 1000.0f;
             in_place_sort<IndexLength>(key_index_pairs[i]);
 
             std::string file_name = config.intermediate_file_prefix + "-chunk-" + std::to_string(i);
@@ -477,10 +484,13 @@ void Sorter<RecordType>::sort() {
                 writers.push_back(std::move(writer));
             }
 
+            auto start_writers = std::chrono::high_resolution_clock::now();
             #pragma omp parallel for num_threads(config.num_threads)
             for (int j=0; j<config.num_threads; j++) {
                 writers[j]->run();
             }
+            auto end_writers = std::chrono::high_resolution_clock::now();
+            timing_info.async_value_writer_post_sort += std::chrono::duration_cast<std::chrono::microseconds>(end_writers - start_writers).count() / 1000.0f;
             fds.push_back(write_fd);
             spdlog::debug("Done async read and key extraction");
         }
@@ -636,7 +646,7 @@ void Sorter<RecordType>::write_back_values_post_merge(std::vector<int> &fds,
         close(fd);
     }
     auto write_end = std::chrono::high_resolution_clock::now();
-    timing_info.final_output_write += std::chrono::duration_cast<std::chrono::microseconds>(write_end - write_start).count() / 1000.0f;
+    timing_info.output_write += std::chrono::duration_cast<std::chrono::microseconds>(write_end - write_start).count() / 1000.0f;
 
     for (size_t i = 0; i < output_ptrs.size(); i++) {
         free(output_ptrs[i]);
@@ -666,8 +676,11 @@ void Sorter<RecordType>::write_back_values_post_merge_async(std::vector<int> &fd
         close(out_fd);
     }
 
+    auto start = std::chrono::high_resolution_clock::now();
     #pragma omp parallel for num_threads(config.num_threads)
     for (int i=0; i<config.num_threads; i++) {
         writers[i]->run();
     }
+    auto end = std::chrono::high_resolution_clock::now();
+    timing_info.value_write_back_post_merge = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
 }

@@ -11,7 +11,7 @@ namespace io_uring_utils {
 
 constexpr uint32_t BLOCK_ALIGN = 4096;
 
-constexpr bool POLL = true;
+constexpr bool POLL = false;
 
 struct ReadTask {
     void *buf;
@@ -32,7 +32,7 @@ struct UringRing {
     explicit UringRing(uint32_t queue_depth)
         : queue_depth_(queue_depth), pending_(0) {
         unsigned int flags = 0;
-        // flags |= IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_SINGLE_ISSUER;
+        flags |= IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_SINGLE_ISSUER;
         if (POLL) {
             flags |= IORING_SETUP_IOPOLL;
         } 
