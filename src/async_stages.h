@@ -210,13 +210,15 @@ public:
         }
     }
 
-    void write_values_to_buf(uint32_t buf_slot) {
-        uint64_t num_values = WRITE_IO_BYTES / RecordType::VALUE_LENGTH;
+    /** Fills write_bufs[buf_slot] with values for key_index_pairs[start_index .. start_index+num_values-1]. */
+    void write_values_to_buf(uint32_t buf_slot, uint64_t start_index) {
+        const uint64_t num_values = WRITE_IO_BYTES / RecordType::VALUE_LENGTH;
         uint8_t *buf = (uint8_t*)write_bufs[buf_slot];
-        for (uint64_t i=0; i<num_values; i++) {
-            void *value_ptr = input_buffer + key_index_pairs[i].value * sizeof(RecordType) + RecordType::KEY_LENGTH;
+        for (uint64_t i = 0; i < num_values; i++) {
+            KeyIndexPair &kv = key_index_pairs[start_index + i];
+            const void *value_ptr = input_buffer + kv.value * sizeof(RecordType) + RecordType::KEY_LENGTH;
             std::memcpy(buf, value_ptr, RecordType::VALUE_LENGTH);
-            key_index_pairs[i].value = (uint64_t) run_idx;
+            kv.value = (uint64_t) run_idx;
             buf += RecordType::VALUE_LENGTH;
         }
     }
@@ -231,6 +233,7 @@ public:
         uint64_t bytes_to_write = values_per_chunk * RecordType::VALUE_LENGTH;
         assert(bytes_to_write % WRITE_IO_BYTES == 0);
     
+        const uint64_t num_values_per_batch = WRITE_IO_BYTES / RecordType::VALUE_LENGTH;
         uint64_t num_writes = bytes_to_write / WRITE_IO_BYTES;
         uint64_t completed = 0ll;
         uint32_t to_submit = 0;
@@ -240,17 +243,17 @@ public:
             if (!slots.empty() && next_write < num_writes) {
                 uint32_t slot = slots.front();
                 slots.pop();
-                void *buf = write_bufs[slot];
-                write_values_to_buf(slot);
-                uint64_t user_data = slot;
-                ring->prepare_write(fd, buf, WRITE_IO_BYTES, file_offset, user_data);
+                uint64_t start_index = next_write * num_values_per_batch;
+                write_values_to_buf(slot, start_index);
+                ring->prepare_write(fd, write_bufs[slot], WRITE_IO_BYTES, file_offset, slot);
                 to_submit++;
                 next_write++;
+                file_offset += WRITE_IO_BYTES;
             }
 
             bool should_submit = slots.empty() || to_submit >= BATCH_SIZE || (next_write == num_writes);
             if (should_submit) {
-                int nr = (next_write == num_writes) ? (num_writes - completed) : slots.empty();
+                int nr = (next_write == num_writes) ? static_cast<int>(num_writes - completed) : 1;
                 ring->submit_and_wait(nr);
                 to_submit = 0;
 
@@ -293,7 +296,7 @@ class AsyncValueReader {
 
 public:
     inline bool waiting_for_io() {
-        spdlog::debug("cur_buf_idx of stream {}: {}", reader_id, cur_buf_idx);
+        // spdlog::debug("cur_buf_idx of stream {}: {}", reader_id, cur_buf_idx);
         return states[cur_buf_idx] != BufState::IoCompleted;
     }
 
@@ -335,7 +338,6 @@ public:
             return nullptr;
         }
         if (chunk_offset >= read_chunk_size) {
-            spdlog::debug("Here: {}", this->reader_id);
             states[cur_buf_idx] = BufState::Empty;
 
             cur_buf_idx = 1 ^ cur_buf_idx;
@@ -351,7 +353,7 @@ public:
 
     inline void process_io_completion(uint64_t user_data) {
         int buf_idx = (int)(user_data & 1);
-        spdlog::debug("buf_idx of completed IO: {}", buf_idx);
+        // spdlog::debug("buf_idx of completed IO: {}", buf_idx);
         states[buf_idx] = IoCompleted;
     }
 
@@ -432,19 +434,19 @@ public:
     ValueWriterPostMerge& operator=(const ValueWriterPostMerge&) = delete;
 
     inline void poll_completions() {
-        spdlog::debug("Polling completions");
+        // spdlog::debug("Polling completions");
         struct io_uring_cqe *cqe;
         if (!ring->peek_cqe(&cqe)) {
             ring->wait_cqe(&cqe);
         }
 
         if ((cqe->user_data >> 32) < NUM_SLOTS) {
-            spdlog::debug("Processing write completion");
+            // spdlog::debug("Processing write completion");
             uint32_t slot = (cqe->user_data >> 32);
             slots.push(slot);
         } else {
             int reader_idx = (cqe->user_data >> 16) & 0xffff;
-            spdlog::debug("Reader idx: {}", reader_idx);
+            // spdlog::debug("Reader idx: {}", reader_idx);
             readers[reader_idx]->process_io_completion(cqe->user_data);
             auto task = readers[reader_idx]->get_next_io();
             if (task.has_value()) {
@@ -486,16 +488,14 @@ public:
             for (uint64_t i=0; i<num_records_in_batch; i++) {
                 out_buf[i].key = __builtin_bswap64(sorted_keys->key);
                 uint32_t stream_id = sorted_keys->value;
-                if (stream_id >= readers.size()) {
-                    spdlog::error("Stream id out of bounds: {}, Records emitted: {}", stream_id, records_emitted);
-                    assert(false);
-                }
-                
+
+                assert(stream_id < readers.size());
                 assert(readers[stream_id] != nullptr);
 
                 void *value = readers[stream_id]->get_next_value_fast();
                 if (value == nullptr) [[unlikely]] {
-                    // Having another call here just so that we can submit an io pre-emptively
+                    // Having another call here just so that we can submit an io pre-emptively. This is necessary when switching from
+                    // one buffer to the next. If the IO to the next buffer is complete, it won't refill the earlier buffer.
                     value = readers[stream_id]->get_next_value();
                     if (readers[stream_id]->need_submit()) {
                         auto task = readers[stream_id]->get_next_io();
@@ -504,19 +504,16 @@ public:
                         ring->prepare_read(task.value());
                     }
 
-                    spdlog::debug("Encountered page fault for stream: {}, i: {}", stream_id, i);
                     while (readers[stream_id]->waiting_for_io()) {
                         poll_completions();
                     }
                     ring->submit_and_wait(0);
-                    spdlog::debug("Processed page fault");
                     value = readers[stream_id]->get_next_value();
                 }
                 assert(value != nullptr && "Value is null");
                 std::memcpy(&out_buf[i].value, value, RecordType::VALUE_LENGTH);
                 sorted_keys++;
             }
-            spdlog::debug("Exhausted write buffer");
             ring->prepare_write(out_fd, write_bufs[slot], num_records_in_batch * sizeof(RecordType), 
                 out_file_offset, (uint64_t)slot << 32);
             ring->submit_and_wait(0);

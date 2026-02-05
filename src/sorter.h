@@ -488,7 +488,7 @@ void Sorter<RecordType>::sort() {
     free(sorted_values);
     std::vector<MergeTask<KeyIndexPair>> tasks;
     merge(key_index_pairs, config.run_size_bytes / sizeof(RecordType), &tasks);
-    if (false) {
+    if (config.use_async) {
         write_back_values_post_merge_async(fds, tasks, key_index_pairs);
     } else {
         write_back_values_post_merge(fds, tasks, key_index_pairs);
@@ -616,7 +616,6 @@ void Sorter<RecordType>::write_back_values_post_merge(std::vector<int> &fds,
             output_ptr->key = __builtin_bswap64(ptr->key);
             uint32_t stream_id = ptr->value;
             void *value = value_readers[stream_id].read_next();
-            assert(stream_id < value_readers.size());
             std::memcpy(&output_ptr->value, value, RecordType::VALUE_LENGTH);
             output_ptr++;
             ptr++;
