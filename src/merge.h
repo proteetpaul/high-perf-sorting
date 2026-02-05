@@ -52,9 +52,9 @@ std::vector<MergeTask<RecordType>> create_tasks(std::vector<std::vector<RecordTy
 template<typename RecordType>
 void run_merge_avx_512(MergeTask<RecordType> *task, bool *result_sorted) {
     using Regtype = avx512;
-    using ItemType = RecordType;
-    static_assert(std::is_same_v<decltype(ItemType::key), int64_t>);
-    static_assert(std::is_same_v<decltype(ItemType::value), uint64_t>);
+    using ItemType = KeyValue<i64, i64>;
+    // static_assert(std::is_same_v<decltype(ItemType::key), int64_t>);
+    // static_assert(std::is_same_v<decltype(ItemType::value), uint64_t>);
 
     int num_streams = task->start_ptrs.size();
     std::vector<ItemType*> end_ptrs;

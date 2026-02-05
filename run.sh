@@ -13,6 +13,7 @@ PROFILE_OUTPUT="perf.data"
 FLAMEGRAPH_OUTPUT="flamegraph.svg"
 SEPARATE_VALUES=false
 ENABLE_MEMORY_PROFILING=false
+USE_ASYNC_IO=false
 PCM_MEMORY="/users/proteet/pcm/build/bin/pcm-memory"
 
 # Function to show usage
@@ -88,6 +89,10 @@ while [[ $# -gt 0 ]]; do
             FLAMEGRAPH_OUTPUT="$2"
             shift 2
             ;;
+        --use-async)
+            USE_ASYNC_IO=true
+            shift
+            ;;
         --help|-h)
             show_usage
             exit 0
@@ -149,6 +154,10 @@ CMD_ARGS="$CMD_ARGS --num-threads $NUM_THREADS --working-dir $WORKING_DIR"
 
 if [ "$SEPARATE_VALUES" = true ]; then
     CMD_ARGS="$CMD_ARGS --separate-values"
+fi
+
+if [ "$USE_ASYNC_IO" = true ]; then
+    CMD_ARGS="$CMD_ARGS --use-async"
 fi
 
 echo "Running sorter with parameters:"

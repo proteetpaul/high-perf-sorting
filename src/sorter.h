@@ -444,11 +444,18 @@ void Sorter<RecordType>::sort() {
                 write_intermediate_values(sorted_values, v.size() * RecordType::VALUE_LENGTH, i)
             );
         } else {
+            spdlog::debug("Starting async read and key extraction");
+            key_index_pairs[i].resize(v.size());
+            memset(key_index_pairs[i].data(), 0, v.size() * sizeof(KeyIndexPair));
+
+            uint64_t records_per_thread = (config.run_size_bytes / config.num_threads) / ELEM_SIZE;
             #pragma omp parallel for num_threads(config.num_threads)
             for (int j=0; j<config.num_threads; j++) {
+                auto *record_ptr = v.data() + j * records_per_thread;
+                auto *key_index_ptr = key_index_pairs[i].data() + j * records_per_thread;
                 read_run_and_extract_keys<RecordType>(
                     read_fd, j, config.run_size_bytes / config.num_threads,
-                    reinterpret_cast<uint8_t*>(v.data()), key_index_pairs[i].data());
+                    record_ptr, key_index_ptr);
             }
             in_place_sort<IndexLength>(key_index_pairs[i]);
 
@@ -474,12 +481,14 @@ void Sorter<RecordType>::sort() {
             for (int j=0; j<config.num_threads; j++) {
                 writers[j]->run();
             }
+            fds.push_back(write_fd);
+            spdlog::debug("Done async read and key extraction");
         }
     }
     free(sorted_values);
     std::vector<MergeTask<KeyIndexPair>> tasks;
     merge(key_index_pairs, config.run_size_bytes / sizeof(RecordType), &tasks);
-    if (config.use_async) {
+    if (false) {
         write_back_values_post_merge_async(fds, tasks, key_index_pairs);
     } else {
         write_back_values_post_merge(fds, tasks, key_index_pairs);
@@ -607,6 +616,7 @@ void Sorter<RecordType>::write_back_values_post_merge(std::vector<int> &fds,
             output_ptr->key = __builtin_bswap64(ptr->key);
             uint32_t stream_id = ptr->value;
             void *value = value_readers[stream_id].read_next();
+            assert(stream_id < value_readers.size());
             std::memcpy(&output_ptr->value, value, RecordType::VALUE_LENGTH);
             output_ptr++;
             ptr++;
