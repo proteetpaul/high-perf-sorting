@@ -20,11 +20,17 @@ endif()
 
 find_package(OpenMP REQUIRED)
 
+find_library(LIBURING_LIBRARIES uring)
+find_path(LIBURING_INCLUDE_DIRS liburing.h)
+
 # Add executable
 add_executable(sorter main.cpp)
 
 # target_compile_options(sorter PRIVATE -fopenmp)
 target_link_libraries(sorter PUBLIC OpenMP::OpenMP_CXX)
+
+target_include_directories(sorter PRIVATE ${LIBURING_INCLUDE_DIRS})
+target_link_libraries(sorter PRIVATE ${LIBURING_LIBRARIES})
 
 # Enable additional optimizations
 # target_compile_options(sorter PRIVATE -march=native -mtune=native)

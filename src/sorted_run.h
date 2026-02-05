@@ -16,11 +16,6 @@ struct SortedRun {
     uint64_t num_elements;
 };
 
-enum ReaderState {
-    WaitingForIO,
-    Ready,
-};
-
 template <typename RecordType>
 class SortedRunReader {
     static constexpr uint32_t ELEM_SIZE = sizeof(RecordType);
@@ -49,7 +44,6 @@ class SortedRunReader {
 
     // uint32_t next_chunk;
 
-    // ReaderState state;
 public:
     // IoTask* get_next_io_task() {
 

@@ -22,12 +22,15 @@
 
 #include <pthread.h>
 
+#include "io_uring_utils.h"
 #include "perf_utils.h"
 #include "key_value_pair.h"
 #include "sorted_run.h"
 #include "config.h"
 #include "merge.h"
 #include "read_values.h"
+#include "async_stages.h"
+
 #define _REENTRANT
 #include "ips4o.hpp"
 
@@ -54,7 +57,7 @@ struct TimingInfo {
 };
 
 
-void write_to_disk(void *buf, uint64_t file_offset, uint64_t bytes, int fd) {
+inline void write_to_disk(void *buf, uint64_t file_offset, uint64_t bytes, int fd) {
     uint64_t offset = 0ll;
     while (bytes > 0) {
         uint64_t bytes_to_write = std::min(bytes, MAX_IO_CHUNK_SIZE);
@@ -111,7 +114,14 @@ class Sorter {
     void generate_run_for_merge_sort(std::vector<RecordType> &run,  
         void *sorted_values, std::vector<KeyIndexPair> &key_index_pairs, int run_id);
 
+    /** Same as generate_run_for_merge_sort but assumes key_index_pairs already filled (e.g. by Task1). */
+    void generate_run_for_merge_sort_after_keys(std::vector<RecordType> &run,
+        void *sorted_values, std::vector<KeyIndexPair> &key_index_pairs, int run_id);
+
     void write_back_values_post_merge(std::vector<int> &fds, std::vector<MergeTask<KeyIndexPair>> &tasks,
+        std::vector<std::vector<KeyIndexPair>> &key_index_pairs);
+
+    void write_back_values_post_merge_async(std::vector<int> &fds, std::vector<MergeTask<KeyIndexPair>> &tasks,
         std::vector<std::vector<KeyIndexPair>> &key_index_pairs);
 
 public:
@@ -362,6 +372,27 @@ void Sorter<RecordType>::generate_run_for_merge_sort(
     auto start = std::chrono::high_resolution_clock::now();
     #pragma omp parallel for num_threads(config.num_threads)
     for (int i=0; i<run.size(); i++) {
+        void *value_ptr = (uint8_t*)run.data() + key_index_pairs[i].value * sizeof(RecordType) + RecordType::KEY_LENGTH;
+        std::memcpy((uint8_t*) sorted_values + i * RecordType::VALUE_LENGTH, value_ptr, RecordType::VALUE_LENGTH);
+        key_index_pairs[i].value = (uint64_t)run_id;
+    }
+    auto end = std::chrono::high_resolution_clock::now();
+    timing_info.create_intermediate_value_runs += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
+}
+
+template <typename RecordType>
+void Sorter<RecordType>::generate_run_for_merge_sort_after_keys(
+        std::vector<RecordType> &run,
+        void *sorted_values, std::vector<KeyIndexPair> &key_index_pairs, int run_id) {
+    assert(config.separate_values);
+    assert((run.size() * sizeof(RecordType)) % 64 == 0);
+    assert(key_index_pairs.size() == run.size());
+
+    in_place_sort<IndexLength>(key_index_pairs);
+
+    auto start = std::chrono::high_resolution_clock::now();
+    #pragma omp parallel for num_threads(config.num_threads)
+    for (int i=0; i<run.size(); i++) {
         void *value_ptr = (uint8_t*)run.data() + key_index_pairs[i].value * sizeof(RecordType);
         std::memcpy((uint8_t*) sorted_values + i * RecordType::VALUE_LENGTH, value_ptr, RecordType::VALUE_LENGTH);
         key_index_pairs[i].value = (uint64_t)run_id;
@@ -397,21 +428,61 @@ void Sorter<RecordType>::sort() {
     std::vector<std::vector<KeyIndexPair>> key_index_pairs(num_runs);
     std::vector<int> fds;
 
+    std::vector<RecordType> v;
+    v.resize(config.run_size_bytes / ELEM_SIZE);
+    memset(v.data(), 0, config.run_size_bytes);
+    void *sorted_values;
+    int ret = posix_memalign(&sorted_values, 4096, RecordType::VALUE_LENGTH * v.size());
+    assert(ret == 0);
+    memset(sorted_values, 0, RecordType::VALUE_LENGTH * v.size());
+
     for (int i=0; i<num_runs; i++) {
-        auto v = read_input_chunk(i);
-        void *sorted_values;
-        int ret = posix_memalign(&sorted_values, 4096, RecordType::VALUE_LENGTH * v.size());
-        assert(ret == 0);
-        memset(sorted_values, 0, RecordType::VALUE_LENGTH * v.size());
-        generate_run_for_merge_sort(v, sorted_values, key_index_pairs[i], i);
-        fds.push_back(
-            write_intermediate_values(sorted_values, v.size() * RecordType::VALUE_LENGTH, i)
-        );
-        free(sorted_values);
+        if (!config.use_async) {
+            v = read_input_chunk(i);
+            generate_run_for_merge_sort(v, sorted_values, key_index_pairs[i], i);
+            fds.push_back(
+                write_intermediate_values(sorted_values, v.size() * RecordType::VALUE_LENGTH, i)
+            );
+            free(sorted_values);
+        } else {
+            #pragma omp parallel for num_threads(config.num_threads)
+            for (int j=0; j<config.num_threads; j++) {
+                read_run_and_extract_keys<RecordType>(
+                    read_fd, j, config.run_size_bytes / config.num_threads,
+                    reinterpret_cast<uint8_t*>(v.data()), key_index_pairs[i].data());
+            }
+            in_place_sort<IndexLength>(key_index_pairs[i]);
+
+            std::string file_name = config.intermediate_file_prefix + "-chunk-" + std::to_string(i);
+            int write_fd = open(file_name.c_str(), O_CREAT | O_RDWR | O_TRUNC | O_DIRECT, 0644);
+            assert(write_fd != -1);
+
+            posix_fallocate64(write_fd, 0, RecordType::VALUE_LENGTH * v.size());
+
+            uint64_t values_per_chunk = v.size() / config.num_threads;
+            assert(values_per_chunk % io_uring_utils::BLOCK_ALIGN == 0);
+            std::unique_ptr<ValueWriterPostSort<RecordType>> writers[config.num_threads];
+
+            for (int j = 0; j < config.num_threads; j++) {
+                KeyIndexPair* key_index_buf = key_index_pairs[i].data() + j * values_per_chunk;
+                writers[i] = std::make_unique<ValueWriterPostSort<RecordType>>(
+                    write_fd, j, values_per_chunk, reinterpret_cast<uint8_t*>(v.data()), i, key_index_buf
+                );
+            }
+
+            #pragma omp parallel for num_threads(config.num_threads)
+            for (int j=0; j<config.num_threads; j++) {
+                writers[j]->run();
+            }
+        }
     }
     std::vector<MergeTask<KeyIndexPair>> tasks;
     merge(key_index_pairs, config.run_size_bytes / sizeof(RecordType), &tasks);
-    write_back_values_post_merge(fds, tasks, key_index_pairs);
+    if (config.use_async) {
+        write_back_values_post_merge_async(fds, tasks, key_index_pairs);
+    } else {
+        write_back_values_post_merge(fds, tasks, key_index_pairs);
+    }
 }
 
 template <typename RecordType>
@@ -562,4 +633,32 @@ void Sorter<RecordType>::write_back_values_post_merge(std::vector<int> &fds,
     }
 
     spdlog::debug("Done writing back values post merge");
+}
+
+template<typename RecordType>
+void Sorter<RecordType>::write_back_values_post_merge_async(std::vector<int> &fds, 
+        std::vector<MergeTask<KeyIndexPair>> &tasks,
+        std::vector<std::vector<KeyIndexPair>> &key_index_pairs) {
+    std::vector<KeyIndexPair*> start_ptrs;
+    for (auto &v: key_index_pairs) {
+        start_ptrs.push_back(v.data());
+    }
+
+    std::unique_ptr<ValueWriterPostMerge<RecordType>> writers[config.num_threads];
+    for (int i=0; i<config.num_threads; i++) {
+        std::string path = config.output_file + "-task-" + std::to_string(i);
+        int out_fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC | O_DIRECT, 0644);
+        posix_fallocate64(out_fd, 0ll, sizeof(RecordType) * tasks[i].total_records_sorted);
+        assert(out_fd != -1);
+
+        // ValueWriterPostMerge<RecordType> writer {&tasks[i], out_fd, fds, start_ptrs};
+        // writers.emplace_back(std::move(writer));
+        writers[i] = std::make_unique<ValueWriterPostMerge<RecordType>>(&tasks[i], out_fd, fds, start_ptrs);
+        close(out_fd);
+    }
+
+    // #pragma omp parallel for num_threads(config.num_threads)
+    // for (int i=0; i<config.num_threads; i++) {
+    //     writers[i]->run();
+    // }
 }

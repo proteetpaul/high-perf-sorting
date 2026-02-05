@@ -25,6 +25,9 @@ struct Config {
 
     bool use_std_sort;
 
+    /** If true, use io_uring for phase 1+2 (read + extract keys). Requires liburing. */
+    bool use_async{false};
+
     inline uint64_t num_runs() {
         return (file_size_bytes + run_size_bytes - 1) / run_size_bytes;
     }
