@@ -461,7 +461,8 @@ public:
 
     void run() {
         spdlog::debug("Start post-merge ops");
-        ring = std::make_unique<io_uring_utils::UringRing>(PREFETCH_DEPTH);
+        uint32_t ring_num_entries = NUM_SLOTS + readers.size();
+        ring = std::make_unique<io_uring_utils::UringRing>(ring_num_entries);
 
         for (uint32_t i=0; i<NUM_SLOTS; i++) {
             slots.push(i);
