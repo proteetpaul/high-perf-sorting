@@ -115,10 +115,6 @@ class Sorter {
     void generate_run_for_merge_sort(std::vector<RecordType> &run,  
         void *sorted_values, std::vector<KeyIndexPair> &key_index_pairs, int run_id);
 
-    /** Same as generate_run_for_merge_sort but assumes key_index_pairs already filled (e.g. by Task1). */
-    void generate_run_for_merge_sort_after_keys(std::vector<RecordType> &run,
-        void *sorted_values, std::vector<KeyIndexPair> &key_index_pairs, int run_id);
-
     void write_back_values_post_merge(std::vector<int> &fds, std::vector<MergeTask<KeyIndexPair>> &tasks,
         std::vector<std::vector<KeyIndexPair>> &key_index_pairs);
 
@@ -135,20 +131,28 @@ public:
 
     void sort();
 
-    void print_timing_stats() {
+    void print_timing_stats_sync() {
         spdlog::info("Read input: {} ms", timing_info.input_read);
-        spdlog::info("Read merge phase: {} ms", timing_info.merge_read);
-        spdlog::info("Write sorted runs to disk: {} ms", timing_info.intermediate_write);
-        spdlog::info("Write output to disk: {} ms", timing_info.output_write);
-        spdlog::info("Sorting time: {} ms", timing_info.sort_time);
         spdlog::info("Key-value separation: {} ms", timing_info.value_separation);
+        spdlog::info("Sorting time: {} ms", timing_info.sort_time);
         spdlog::info("Value write back (for one-pass sort): {} ms", timing_info.value_write_back);
-        spdlog::info("Creation of intermediate value runs: {} ms", timing_info.create_intermediate_value_runs);
+        spdlog::info("Creation of intermediate value runs (for merge sort): {} ms", timing_info.create_intermediate_value_runs);
+        spdlog::info("Write sorted runs to disk: {} ms", timing_info.intermediate_write);
+        spdlog::info("Read merge phase: {} ms", timing_info.merge_read);
         spdlog::info("In-memory merge: {} ms", timing_info.merge_in_memory);
+        spdlog::info("Write output to disk: {} ms", timing_info.output_write);
         spdlog::info("Write back values (after merge sort): {} ms", timing_info.value_write_back_post_merge);
+    }
+
+    void print_timing_stats() {
         if (config.use_async) {
-            spdlog::info("Async read and extract keys: {} ms", timing_info.async_read_and_extract_keys);
-            spdlog::info("Async value writer post sort: {} ms", timing_info.async_value_writer_post_sort);
+            spdlog::info("Read and extract keys: {} ms", timing_info.async_read_and_extract_keys);
+            spdlog::info("Sorting time: {} ms", timing_info.sort_time);
+            spdlog::info("Accumulate values and write intermediate runs to disk: {} ms", timing_info.async_value_writer_post_sort);
+            spdlog::info("In-memory merge: {} ms", timing_info.merge_in_memory);
+            spdlog::info("Write back values (after merge sort): {} ms", timing_info.value_write_back_post_merge);
+        } else {
+            print_timing_stats_sync();
         }
     }
 };
@@ -377,27 +381,6 @@ void Sorter<RecordType>::generate_run_for_merge_sort(
     #pragma omp parallel for num_threads(config.num_threads)
     for (int i=0; i<run.size(); i++) {
         void *value_ptr = (uint8_t*)run.data() + key_index_pairs[i].value * sizeof(RecordType) + RecordType::KEY_LENGTH;
-        std::memcpy((uint8_t*) sorted_values + i * RecordType::VALUE_LENGTH, value_ptr, RecordType::VALUE_LENGTH);
-        key_index_pairs[i].value = (uint64_t)run_id;
-    }
-    auto end = std::chrono::high_resolution_clock::now();
-    timing_info.create_intermediate_value_runs += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
-}
-
-template <typename RecordType>
-void Sorter<RecordType>::generate_run_for_merge_sort_after_keys(
-        std::vector<RecordType> &run,
-        void *sorted_values, std::vector<KeyIndexPair> &key_index_pairs, int run_id) {
-    assert(config.separate_values);
-    assert((run.size() * sizeof(RecordType)) % 64 == 0);
-    assert(key_index_pairs.size() == run.size());
-
-    in_place_sort<IndexLength>(key_index_pairs);
-
-    auto start = std::chrono::high_resolution_clock::now();
-    #pragma omp parallel for num_threads(config.num_threads)
-    for (int i=0; i<run.size(); i++) {
-        void *value_ptr = (uint8_t*)run.data() + key_index_pairs[i].value * sizeof(RecordType);
         std::memcpy((uint8_t*) sorted_values + i * RecordType::VALUE_LENGTH, value_ptr, RecordType::VALUE_LENGTH);
         key_index_pairs[i].value = (uint64_t)run_id;
     }

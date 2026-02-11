@@ -177,24 +177,23 @@ class ValueWriterPostSort {
 
     KeyIndexPair* key_index_pairs;        // Sorted key-index pairs
 
-public:
-    static constexpr uint64_t WRITE_IO_BYTES = RecordType::VALUE_LENGTH * io_uring_utils::BLOCK_ALIGN;
-
-    static constexpr uint32_t NUM_SLOTS = PREFETCH_DEPTH * 4;
+    static constexpr uint32_t NUM_SLOTS = 16;
 
     static constexpr uint32_t BATCH_SIZE = 1;
-    
+
+    static constexpr uint64_t WRITE_IO_BYTES = RecordType::VALUE_LENGTH * io_uring_utils::BLOCK_ALIGN;
+public:    
     explicit ValueWriterPostSort(int fd, int thread_idx, uint64_t values_per_chunk,
         uint8_t* input_buffer, int run_idx,
         KeyIndexPair* key_index_pairs
     ): thread_idx(thread_idx), values_per_chunk(values_per_chunk), 
             run_idx(run_idx), input_buffer(input_buffer), key_index_pairs(key_index_pairs) {
         this->fd = dup(fd);
-        // ring = std::make_unique<io_uring_utils::UringRing>(PREFETCH_DEPTH);
         write_bufs.resize(NUM_SLOTS);
         for (uint32_t i=0; i<NUM_SLOTS; i++) {
             int ret = posix_memalign(&write_bufs[i], io_uring_utils::BLOCK_ALIGN, WRITE_IO_BYTES);
             assert(ret == 0);
+            memset(write_bufs[i], 0, WRITE_IO_BYTES);
         }
     }
 
@@ -225,7 +224,7 @@ public:
 
     void run() {
         spdlog::debug("Start writing out values post sort");
-        ring = std::make_unique<io_uring_utils::UringRing>(PREFETCH_DEPTH);
+        ring = std::make_unique<io_uring_utils::UringRing>(NUM_SLOTS);
 
         std::queue<uint32_t> slots;
         for (uint32_t i=0; i<NUM_SLOTS; i++) {
@@ -308,6 +307,7 @@ public:
         for (int i=0; i<2; i++) {
             int ret = posix_memalign(&ptr[i], 4096, read_chunk_size);
             assert(ret == 0);
+            memset(ptr[i], 0, read_chunk_size);
             states[i] = BufState::Empty;
         }
         cur_buf_idx = 0;
@@ -422,6 +422,7 @@ public:
         for (uint32_t i=0; i<NUM_SLOTS; i++) {
             int ret = posix_memalign(&write_bufs[i], io_uring_utils::BLOCK_ALIGN, WRITE_IO_BYTES);
             assert(ret == 0);
+            memset(write_bufs[i], 0, WRITE_IO_BYTES);
         }
     }
 
