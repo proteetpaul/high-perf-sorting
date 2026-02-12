@@ -453,7 +453,7 @@ public:
 
         for (int i=0; i<in_fds.size(); i++) {
             int fd = dup(in_fds[i]);
-            uint64_t logical_start = (start_ptrs[i] - task->start_ptrs[i]) * RecordType::VALUE_LENGTH;
+            uint64_t logical_start = (task->start_ptrs[i] - start_ptrs[i]) * RecordType::VALUE_LENGTH;
             auto reader = std::make_unique<AsyncValueReader>(fd, logical_start, RecordType::VALUE_LENGTH,
                                                             READ_IO_CHUNK, i);
             readers.push_back(std::move(reader));
