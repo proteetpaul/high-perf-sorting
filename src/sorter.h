@@ -474,6 +474,13 @@ void Sorter<RecordType>::sort() {
             }
             auto end_writers = std::chrono::high_resolution_clock::now();
             timing_info.async_value_writer_post_sort += std::chrono::duration_cast<std::chrono::microseconds>(end_writers - start_writers).count() / 1000.0f;
+
+            auto total_io_processing_time = 0ll;
+            for (int j=0; j<config.num_threads; j++) {
+                total_io_processing_time += writers[j]->io_processing_time_us;
+            }
+
+            spdlog::info("Average IO processing time in post-sort step: {} ms", total_io_processing_time / (1000.0f * config.num_threads));
             fds.push_back(write_fd);
             spdlog::debug("Done async read and key extraction");
         }
@@ -664,6 +671,12 @@ void Sorter<RecordType>::write_back_values_post_merge_async(std::vector<int> &fd
     for (int i=0; i<config.num_threads; i++) {
         writers[i]->run();
     }
+
+    auto total_io_processing_time = 0ll;
+    for (int i=0; i<config.num_threads; i++) {
+        total_io_processing_time += writers[i]->io_processing_time_us;
+    }
     auto end = std::chrono::high_resolution_clock::now();
+    spdlog::info("Average IO processing time in post-merge step: {} ms", total_io_processing_time / (1000.0f * config.num_threads));
     timing_info.value_write_back_post_merge = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
 }

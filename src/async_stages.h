@@ -86,6 +86,8 @@ void read_run_and_extract_keys(int fd, uint64_t thread_id, uint64_t run_size_byt
     using KeyIndexPair = KeyValuePair<RecordType::KEY_LENGTH, sizeof(uint64_t)>;
     constexpr uint32_t ELEM_SIZE = sizeof(RecordType);
 
+    uint64_t io_processing_time = 0;
+
     assert(Config::BLOCK_SIZE_ALIGN % ELEM_SIZE == 0);
     assert(run_size_bytes % ELEM_SIZE == 0);
 
@@ -119,6 +121,7 @@ void read_run_and_extract_keys(int fd, uint64_t thread_id, uint64_t run_size_byt
             free_slots--;
             chunk_id++;
         }
+        auto io_start = std::chrono::high_resolution_clock::now();
         ring.submit_and_wait(1);
 
         struct io_uring_cqe* cqe = nullptr;
@@ -136,6 +139,9 @@ void read_run_and_extract_keys(int fd, uint64_t thread_id, uint64_t run_size_byt
             continue;
         }
         free_slots++;
+        auto io_end = std::chrono::high_resolution_clock::now();
+
+        io_processing_time += std::chrono::duration_cast<std::chrono::microseconds>(io_end - io_start).count();
 
         uint64_t done_chunk_offset = chunk_id * DEFAULT_READ_CHUNK_BYTES;
         uint64_t done_chunk_bytes = std::min(DEFAULT_READ_CHUNK_BYTES, run_size_bytes - done_chunk_offset);
@@ -151,8 +157,29 @@ void read_run_and_extract_keys(int fd, uint64_t thread_id, uint64_t run_size_byt
     auto end = std::chrono::high_resolution_clock::now();
     auto time_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
 
-    spdlog::debug("Run {}: read+extract {} ms, {} chunks", thread_id, time_elapsed, num_chunks);
+    spdlog::debug("Run {}: read+extract {} ms, {} chunks, io_processing time: {} ms", 
+        thread_id, time_elapsed, num_chunks, io_processing_time/1000.0f);
 }
+
+// template<typename RecordType>
+// class InputReader {
+//     using KeyIndexPair = KeyValuePair<RecordType::KEY_LENGTH, sizeof(uint64_t)>;
+//     static constexpr uint32_t ELEM_SIZE = sizeof(RecordType);
+
+//     int fd;
+//     int thread_idx;
+//     RecordType* records;
+//     KeyIndexPair* key_index_pairs;
+
+// public:
+//     explicit InputReader(int fd, int thread_idx, RecordType *records, KeyIndexPair *key_index_pairs)
+//         : fd(fd), thread_idx(thread_idx), records(records), key_index_pairs(key_index_pairs) {
+
+//         }
+//     void run() {
+
+//     }
+// };
 
 /**
 * Accumulates values into in-memory buffers and writes them out in batches. This ensures overlap between cpu and io, while keeping the memory footprint low.
@@ -182,12 +209,15 @@ class ValueWriterPostSort {
     static constexpr uint32_t BATCH_SIZE = 1;
 
     static constexpr uint64_t WRITE_IO_BYTES = RecordType::VALUE_LENGTH * io_uring_utils::BLOCK_ALIGN;
-public:    
+public:
+    uint64_t io_processing_time_us;
+
     explicit ValueWriterPostSort(int fd, int thread_idx, uint64_t values_per_chunk,
         uint8_t* input_buffer, int run_idx,
         KeyIndexPair* key_index_pairs
     ): thread_idx(thread_idx), values_per_chunk(values_per_chunk), 
-            run_idx(run_idx), input_buffer(input_buffer), key_index_pairs(key_index_pairs) {
+            run_idx(run_idx), input_buffer(input_buffer), key_index_pairs(key_index_pairs),
+            io_processing_time_us(0ll) {
         this->fd = dup(fd);
         write_bufs.resize(NUM_SLOTS);
         for (uint32_t i=0; i<NUM_SLOTS; i++) {
@@ -252,6 +282,7 @@ public:
                 file_offset += WRITE_IO_BYTES;
             }
 
+            auto io_start = std::chrono::high_resolution_clock::now();
             bool should_submit = slots.empty() || to_submit >= BATCH_SIZE || (next_write == num_writes);
             if (should_submit) {
                 int nr = (next_write == num_writes) ? static_cast<int>(num_writes - completed) : slots.empty();
@@ -270,6 +301,8 @@ public:
                     ring->mark_cqe_seen(cqe);
                 }
             }
+            auto io_end = std::chrono::high_resolution_clock::now();
+            io_processing_time_us += std::chrono::duration_cast<std::chrono::microseconds>(io_end - io_start).count();
         }
         spdlog::debug("Done writing out values post sort");
     }
@@ -397,14 +430,15 @@ class ValueWriterPostMerge {
 
     std::vector<std::unique_ptr<AsyncValueReader>> readers;
 
-public:
     static constexpr uint64_t NUM_SLOTS = PREFETCH_DEPTH * 4;
 
     static constexpr uint32_t BATCH_SIZE = 1;
+public:
+    uint64_t io_processing_time_us;
 
     explicit ValueWriterPostMerge(MergeTask<KeyIndexPair> *task, int out_fd, 
         std::vector<int> &in_fds, std::vector<KeyIndexPair*> &start_ptrs)
-            : task(task) {
+            : task(task), io_processing_time_us(0ll) {
         assert(in_fds.size() == start_ptrs.size());
         assert(in_fds.size() > 0 && "in_fds must not be empty");
         assert(WRITE_IO_BYTES % RecordType::VALUE_LENGTH == 0);
@@ -483,7 +517,10 @@ public:
 
         while (records_emitted < task->total_records_sorted) {
             while (slots.empty()) {
-                poll_completions();                
+                auto io_start = std::chrono::high_resolution_clock::now();
+                poll_completions();
+                auto io_end = std::chrono::high_resolution_clock::now();
+                io_processing_time_us += std::chrono::duration_cast<std::chrono::microseconds>(io_end - io_start).count();          
             }
             uint32_t slot = slots.front();
             slots.pop();
@@ -500,6 +537,7 @@ public:
 
                 void *value = readers[stream_id]->get_next_value_fast();
                 if (value == nullptr) [[unlikely]] {
+                    auto io_start = std::chrono::high_resolution_clock::now();
                     // Having another call here just so that we can submit an io pre-emptively. This is necessary when switching from
                     // one buffer to the next. If the IO to the next buffer is complete, it won't refill the earlier buffer.
                     value = readers[stream_id]->get_next_value();
@@ -514,15 +552,21 @@ public:
                         poll_completions();
                     }
                     ring->submit_and_wait(0);
+                    auto io_end = std::chrono::high_resolution_clock::now();
+                    io_processing_time_us += std::chrono::duration_cast<std::chrono::microseconds>(io_end - io_start).count();
                     value = readers[stream_id]->get_next_value();
                 }
                 assert(value != nullptr && "Value is null");
                 std::memcpy(&out_buf[i].value, value, RecordType::VALUE_LENGTH);
                 sorted_keys++;
             }
+            auto io_start = std::chrono::high_resolution_clock::now();
             ring->prepare_write(out_fd, write_bufs[slot], num_records_in_batch * sizeof(RecordType), 
                 out_file_offset, (uint64_t)slot << 32);
             ring->submit_and_wait(0);
+
+            auto io_end = std::chrono::high_resolution_clock::now();
+            io_processing_time_us += std::chrono::duration_cast<std::chrono::microseconds>(io_end - io_start).count();
             out_file_offset += num_records_in_batch * sizeof(RecordType);
             records_emitted += num_records_in_batch;
         }
