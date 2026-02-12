@@ -334,9 +334,15 @@ public:
         return states[cur_buf_idx] != BufState::IoCompleted;
     }
 
-    AsyncValueReader(int fd, uint64_t start_offset, uint64_t value_length, uint64_t read_chunk_size, int reader_id): 
-        fd(fd), file_offset(start_offset), chunk_offset(0ll), value_length_bytes(value_length), reader_id(reader_id),
-        read_chunk_size(read_chunk_size) {
+    /** logical_start_offset is the byte offset in the file where the logical stream starts.
+     *  For O_DIRECT, the actual read offset is aligned down to BLOCK_ALIGN; the first buffer
+     *  skips (logical_start_offset % BLOCK_ALIGN) bytes. */
+    AsyncValueReader(int fd, uint64_t logical_start_offset, uint64_t value_length, uint64_t read_chunk_size, int reader_id):
+        fd(fd), value_length_bytes(value_length), reader_id(reader_id), read_chunk_size(read_chunk_size) {
+        uint64_t aligned_offset = (logical_start_offset / io_uring_utils::BLOCK_ALIGN) * io_uring_utils::BLOCK_ALIGN;
+        uint64_t initial_skip_bytes = logical_start_offset - aligned_offset;
+        file_offset = aligned_offset;
+        chunk_offset = initial_skip_bytes;
         for (int i=0; i<2; i++) {
             int ret = posix_memalign(&ptr[i], 4096, read_chunk_size);
             assert(ret == 0);
@@ -447,8 +453,9 @@ public:
 
         for (int i=0; i<in_fds.size(); i++) {
             int fd = dup(in_fds[i]);
-            uint64_t file_offset = (start_ptrs[i] - task->start_ptrs[i]) * RecordType::VALUE_LENGTH;
-            auto reader = std::make_unique<AsyncValueReader>(fd, file_offset, RecordType::VALUE_LENGTH, READ_IO_CHUNK, i);
+            uint64_t logical_start = (start_ptrs[i] - task->start_ptrs[i]) * RecordType::VALUE_LENGTH;
+            auto reader = std::make_unique<AsyncValueReader>(fd, logical_start, RecordType::VALUE_LENGTH,
+                                                            READ_IO_CHUNK, i);
             readers.push_back(std::move(reader));
         }
 
