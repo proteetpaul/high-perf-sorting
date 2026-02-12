@@ -103,14 +103,13 @@ class Sorter {
     void in_place_std_sort(std::vector<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>> &vec);
 
     void generate_key_index_pairs(std::vector<RecordType> &vec, 
-        std::vector<KeyIndexPair> &key_index_pairs,
-        void* value_buffer, bool separate_values);
+        std::vector<KeyIndexPair> &key_index_pairs);
 
     void write_back_values(std::vector<RecordType> &original,
         std::vector<KeyIndexPair> &key_index_pairs,
-        void *value_buffer);
+        std::vector<RecordType> &result);
 
-    void sort_single_run(std::vector<RecordType> &run);
+    void sort_single_run(std::vector<RecordType> &run, std::vector<RecordType> &output);
 
     void generate_run_for_merge_sort(std::vector<RecordType> &run,  
         void *sorted_values, std::vector<KeyIndexPair> &key_index_pairs, int run_id);
@@ -159,7 +158,7 @@ public:
 
 template <typename RecordType>
 void Sorter<RecordType>::generate_key_index_pairs(std::vector<RecordType> &vec, 
-        std::vector<KeyIndexPair> &key_index_pairs, void* value_buffer, bool separate_values) {
+        std::vector<KeyIndexPair> &key_index_pairs) {
     spdlog::debug("Start separating values from keys");
     auto start = std::chrono::high_resolution_clock::now();
     #pragma omp parallel for num_threads(config.num_threads)
@@ -167,10 +166,6 @@ void Sorter<RecordType>::generate_key_index_pairs(std::vector<RecordType> &vec,
         key_index_pairs[i].key = __builtin_bswap64(vec[i].key);
         key_index_pairs[i].set_value(&i);
         uint64_t offset = i * RecordType::VALUE_LENGTH;
-
-        if (separate_values) {
-            std::memcpy((uint8_t*)value_buffer + offset, &vec[i].value, RecordType::VALUE_LENGTH);
-        }
     }
     auto end = std::chrono::high_resolution_clock::now();
     timing_info.value_separation += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
@@ -181,18 +176,18 @@ void Sorter<RecordType>::generate_key_index_pairs(std::vector<RecordType> &vec,
 template <typename RecordType>
 void Sorter<RecordType>::write_back_values(std::vector<RecordType> &original,
         std::vector<KeyIndexPair> &key_index_pairs,
-        void *value_buffer) {
+        std::vector<RecordType> &result) {
     int miss_fd = init_perf_counter(PERF_COUNT_HW_CACHE_MISSES);
     int ref_fd = init_perf_counter(PERF_COUNT_HW_CACHE_REFERENCES);
 
     spdlog::debug("Start writing back values");
     auto start = std::chrono::high_resolution_clock::now();
-    // TODO(): Maybe unroll loop??
+
     #pragma omp parallel for num_threads(config.num_threads)
     for (uint64_t i=0; i<key_index_pairs.size(); i++) {
-        original[i].set_key(&key_index_pairs[i].key);
-        void *value_ptr = (uint8_t*)value_buffer + key_index_pairs[i].value * RecordType::VALUE_LENGTH;
-        original[i].set_value(value_ptr);
+        result[i].key = key_index_pairs[i].key;
+        RecordType value_ptr = original[key_index_pairs[i].value];
+        result[i].set_value((void*) value_ptr.value);
     }
     auto end = std::chrono::high_resolution_clock::now();
     timing_info.value_write_back += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
@@ -346,20 +341,15 @@ void Sorter<RecordType>::sort_independently(std::vector<KeyValuePair<RecordType:
 }
 
 template<typename RecordType>
-void Sorter<RecordType>::sort_single_run(std::vector<RecordType> &run) {
+void Sorter<RecordType>::sort_single_run(std::vector<RecordType> &run, std::vector<RecordType> &output) {
     if (config.separate_values) {
         std::vector<KeyIndexPair> key_index_pairs(run.size());
-        void *value_buffer;
-        int ret = posix_memalign(&value_buffer, 64, RecordType::VALUE_LENGTH * run.size());
-        assert(ret == 0);
-        memset(value_buffer, 0, RecordType::VALUE_LENGTH * run.size());
 
-        generate_key_index_pairs(run, key_index_pairs, value_buffer, true);
+        generate_key_index_pairs(run, key_index_pairs);
         in_place_sort<IndexLength>(key_index_pairs);
-        write_back_values(run, key_index_pairs, value_buffer);
+        write_back_values(run, key_index_pairs, output);
 
-        spdlog::info("is sorted: {}", std::is_sorted(run.begin(), run.end()));
-        free(value_buffer);
+        spdlog::info("is sorted: {}", std::is_sorted(output.begin(), output.end()));
     } else {
         in_place_sort<RecordType::VALUE_LENGTH>(run);
     }
@@ -374,7 +364,7 @@ void Sorter<RecordType>::generate_run_for_merge_sort(
     key_index_pairs.resize(run.size());
     memset(key_index_pairs.data(), 0, run.size() * sizeof(KeyIndexPair));
 
-    generate_key_index_pairs(run, key_index_pairs, nullptr, false);
+    generate_key_index_pairs(run, key_index_pairs);
     in_place_sort<IndexLength>(key_index_pairs);
 
     auto start = std::chrono::high_resolution_clock::now();
@@ -399,8 +389,10 @@ void Sorter<RecordType>::sort() {
     uint64_t num_runs = config.num_runs();
     if (num_runs == 1) {
         auto v = read_input_chunk(0);
-        sort_single_run(v);
-        write_output_chunk(v.data(), config.file_size_bytes);
+        std::vector<RecordType> output(v.size());
+        memset((void*) output.data(), 0, v.size() * ELEM_SIZE);
+        sort_single_run(v, output);
+        write_output_chunk(output.data(), config.file_size_bytes);
         return;
     }
 
