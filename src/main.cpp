@@ -21,6 +21,7 @@ struct ParsedArgs {
     uint32_t num_threads;
     bool separate_values;
     bool use_std_sort;
+    bool use_async;
 };
 
 size_t parseSizeString(const std::string& sizeStr) {
@@ -105,6 +106,7 @@ void printHelp(const char* program_name) {
     std::cout << "  --memory-size <size>             Memory size with unit (default: 100M)\n";
     std::cout << "  --read-chunk-size <size>         Read chunk size with unit (default: 100M)\n";
     std::cout << "  --num-threads <count>            Number of threads for parallel sorting (default: 1)\n";
+    std::cout << "  --use-async                      Use io_uring\n";
     std::cout << "  --help, -h                       Show this help message\n";
     std::cout << "\nSize units: B (bytes), K (KB), M (MB), G (GB)\n";
     std::cout << "Examples: 1M, 512K, 2G, 1024B\n";
@@ -119,6 +121,7 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
     args.memory_size = parseSizeString("100M");  // 100MB default
     args.num_threads = 1;  // 1 thread default
     args.separate_values = false;
+    args.use_async = false;
     
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -153,6 +156,9 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
             else if (arg == "--use-std-sort") {
                 args.use_std_sort = true;
             }
+            else if (arg == "--use-async") {
+                args.use_async = true;
+            }
             else {
                 std::cerr << "Unknown argument: " << arg << std::endl;
                 std::cerr << "Use --help for usage information." << std::endl;
@@ -178,7 +184,7 @@ void pin_current_thread() {
 }
 
 int main(int argc, char* argv[]) {
-    spdlog::set_level(spdlog::level::info);
+    spdlog::set_level(spdlog::level::debug);
     // pin_current_thread();
     ParsedArgs args;
     int parse_result = parseArguments(argc, argv, args);
@@ -200,6 +206,7 @@ int main(int argc, char* argv[]) {
     config.intermediate_file_prefix = args.working_dir + "/intermediate-" + file_size_str;
     config.separate_values = args.separate_values;
     config.use_std_sort = args.use_std_sort;
+    config.use_async = args.use_async;
     
     if (args.key_size == 8 && args.value_size == 8) {
         Sorter<KeyValuePair<8, 8>> sorter(std::move(config));
