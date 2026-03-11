@@ -308,6 +308,14 @@ public:
 };
 
 class AsyncValueReader {
+    static constexpr int PREFETCH_DEPTH = 4;
+    static constexpr int BUF_MASK = 7;
+
+    // Keeps things simple by avoiding the case where the next buffer to be read is currently in use.
+    static_assert(PREFETCH_DEPTH < BUF_MASK, 
+        "AsyncValueReader: Prefetch depth should be strictly less than the number of buffer entries");
+    static_assert((BUF_MASK & (BUF_MASK + 1)) == 0, "AsyncValueReader: BUF_MASK+1 should be a power of 2");
+
     enum BufState {
         Empty,
         IoCompleted,
@@ -319,18 +327,18 @@ class AsyncValueReader {
     uint64_t end_file_offset;
     int reader_id;
     
-    // TODO(): Maybe the number of buffers can be generalized??
-    void *ptr[2];
-    BufState states[2];
-    uint64_t chunk_offset;      // Offset within the in-memory buffer that is being used for reads
+    void *ptr[BUF_MASK+1];          // Used like a ring
+    BufState states[BUF_MASK+1];
+    uint64_t chunk_offset;          // Offset within the in-memory buffer that is being used for reads
     uint64_t read_chunk_size;
     uint64_t value_length_bytes;    // Size of individual values
-    uint64_t cur_buf_idx;
-
+    uint32_t cur_buf_idx;           // Buffer index currently in use
+    uint32_t last_submitted;        // Buffer index that was last submitted for IO
+    // Note: `cur_buf_idx` and `last_submitted` don't wrap around; should always be masked with `BUF_MASK` before indexing into states or `ptr`
 public:
     inline bool waiting_for_io() {
         // spdlog::debug("cur_buf_idx of stream {}: {}", reader_id, cur_buf_idx);
-        return states[cur_buf_idx] != BufState::IoCompleted;
+        return states[cur_buf_idx & BUF_MASK] != BufState::IoCompleted;
     }
 
     /** logical_start_offset is the byte offset in the file where the logical stream starts.
@@ -342,13 +350,14 @@ public:
         uint64_t initial_skip_bytes = logical_start_offset - aligned_offset;
         file_offset = aligned_offset;
         chunk_offset = initial_skip_bytes;
-        for (int i=0; i<2; i++) {
+        for (int i=0; i<=BUF_MASK; i++) {
             int ret = posix_memalign(&ptr[i], 4096, read_chunk_size);
             assert(ret == 0);
             memset(ptr[i], 0, read_chunk_size);
             states[i] = BufState::Empty;
         }
-        cur_buf_idx = 0;
+        cur_buf_idx = 1;
+        last_submitted = 0;
     }
 
     AsyncValueReader(const AsyncValueReader&) = delete;
@@ -356,61 +365,67 @@ public:
 
     ~AsyncValueReader() {
         close(fd);
-        free(ptr[0]);
-        free(ptr[1]);
+        for (int i=0; i<=BUF_MASK; i++) {
+            free(ptr[i]);
+        }
     }
 
     inline void *get_next_value_fast() {
-        if (states[cur_buf_idx] != BufState::IoCompleted || chunk_offset >= read_chunk_size) {
+        if (states[cur_buf_idx & BUF_MASK] != BufState::IoCompleted || chunk_offset >= read_chunk_size) {
             return nullptr;
         }
-        void *res = (uint8_t*) ptr[cur_buf_idx] + chunk_offset;
+        void *res = (uint8_t*) ptr[cur_buf_idx & BUF_MASK] + chunk_offset;
         chunk_offset += value_length_bytes;
         return res;
     }
 
     inline bool need_submit() {
-        return states[cur_buf_idx] == BufState::IoCompleted || states[cur_buf_idx ^ 1] == BufState::Empty;
+        return last_submitted < cur_buf_idx + PREFETCH_DEPTH;
+        // return states[cur_buf_idx] == BufState::IoCompleted || states[cur_buf_idx ^ 1] == BufState::Empty;
     }
 
     inline void *get_next_value() {
-        if (states[cur_buf_idx] != BufState::IoCompleted) {
+        if (states[cur_buf_idx & BUF_MASK] != BufState::IoCompleted) {
             return nullptr;
         }
         if (chunk_offset >= read_chunk_size) {
-            states[cur_buf_idx] = BufState::Empty;
+            states[cur_buf_idx & BUF_MASK] = BufState::Empty;
 
-            cur_buf_idx = 1 ^ cur_buf_idx;
+            cur_buf_idx++;
             chunk_offset = 0ll;
-            if (states[cur_buf_idx] != BufState::IoCompleted) {
+            if (states[cur_buf_idx & BUF_MASK] != BufState::IoCompleted) {
                 return nullptr;
             }
         }
-        void *res = (uint8_t*) ptr[cur_buf_idx] + chunk_offset;
+        void *res = (uint8_t*) ptr[cur_buf_idx & BUF_MASK] + chunk_offset;
         chunk_offset += value_length_bytes;
         return res;
     }
 
     inline void process_io_completion(uint64_t user_data) {
-        int buf_idx = (int)(user_data & 1);
+        uint32_t buf_idx = (uint32_t) user_data;
         // spdlog::debug("buf_idx of completed IO: {}", buf_idx);
-        states[buf_idx] = IoCompleted;
+        states[buf_idx & BUF_MASK] = IoCompleted;
     }
 
     inline std::optional<io_uring_utils::ReadTask> get_next_io() {
-        uint64_t next_buf_idx = (states[cur_buf_idx] == Empty) ? cur_buf_idx: cur_buf_idx ^ 1;
-        // uint64_t next_buf_idx = cur_buf_idx ^ 1;
-        if (states[next_buf_idx] == IoCompleted) {
+        if (cur_buf_idx + PREFETCH_DEPTH == last_submitted) {
             return std::nullopt;
         }
-        states[next_buf_idx] = WaitingForIO;
-        uint64_t user_data = (reader_id << 16) | next_buf_idx;
+        last_submitted++;
+        states[last_submitted & BUF_MASK] = WaitingForIO;
+        uint64_t user_data = (reader_id << 16) | last_submitted;
         io_uring_utils::ReadTask task {
-            ptr[next_buf_idx], read_chunk_size, 
+            ptr[last_submitted & BUF_MASK], read_chunk_size, 
             fd, file_offset, user_data
         };
         file_offset += read_chunk_size;
         return task;
+        // uint64_t next_buf_idx = (states[cur_buf_idx] == Empty) ? cur_buf_idx: cur_buf_idx ^ 1;
+        // // uint64_t next_buf_idx = cur_buf_idx ^ 1;
+        // if (states[next_buf_idx] == IoCompleted) {
+        //     return std::nullopt;
+        // }
     }
 };
 
@@ -531,7 +546,7 @@ public:
                     // Having another call here just so that we can submit an io pre-emptively. This is necessary when switching from
                     // one buffer to the next. If the IO to the next buffer is complete, it won't refill the earlier buffer.
                     value = readers[stream_id]->get_next_value();
-                    if (readers[stream_id]->need_submit()) {
+                    while (readers[stream_id]->need_submit()) {
                         auto task = readers[stream_id]->get_next_io();
                         assert(task.has_value() && "Task is null");
                         task.value().user_data |= (NUM_SLOTS << 32);
