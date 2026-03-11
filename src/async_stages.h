@@ -308,6 +308,7 @@ public:
 };
 
 class AsyncValueReader {
+public:
     static constexpr int PREFETCH_DEPTH = 4;
     static constexpr int BUF_MASK = 7;
 
@@ -316,6 +317,7 @@ class AsyncValueReader {
         "AsyncValueReader: Prefetch depth should be strictly less than the number of buffer entries");
     static_assert((BUF_MASK & (BUF_MASK + 1)) == 0, "AsyncValueReader: BUF_MASK+1 should be a power of 2");
 
+private:
     enum BufState {
         Empty,
         IoCompleted,
@@ -511,7 +513,7 @@ public:
 
     void run() {
         spdlog::debug("Start post-merge ops");
-        uint32_t ring_num_entries = NUM_SLOTS + readers.size();
+        uint32_t ring_num_entries = AsyncValueReader::PREFETCH_DEPTH * readers.size();
         ring = std::make_unique<io_uring_utils::UringRing>(ring_num_entries);
 
         uint64_t records_emitted = 0ll;
