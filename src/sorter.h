@@ -591,7 +591,7 @@ void Sorter<RecordType>::write_back_values_post_merge(std::vector<int> &fds,
     }
     auto start = std::chrono::high_resolution_clock::now();
 
-    #pragma omp parallel for num_threads(config.num_threads)
+    // Observe single threaded performance as part of POC
     for (int i=0; i<tasks.size(); i++) {
         void *sorted_output = output_ptrs[i];
         std::vector<ValueReader> value_readers;
@@ -649,17 +649,16 @@ void Sorter<RecordType>::write_back_values_post_merge_async(std::vector<int> &fd
     std::vector<std::unique_ptr<ValueWriterPostMerge<RecordType>>> writers;
     for (int i=0; i<config.num_threads; i++) {
         std::string path = config.output_file + "-task-" + std::to_string(i);
-        int out_fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC | O_DIRECT, 0644);
-        posix_fallocate64(out_fd, 0ll, sizeof(RecordType) * tasks[i].total_records_sorted);
-        assert(out_fd != -1);
+        // int out_fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC | O_DIRECT, 0644);
+        // posix_fallocate64(out_fd, 0ll, sizeof(RecordType) * tasks[i].total_records_sorted);
+        // assert(out_fd != -1);
 
-        auto writer = std::make_unique<ValueWriterPostMerge<RecordType>>(&tasks[i], out_fd, fds, start_ptrs);
+        auto writer = std::make_unique<ValueWriterPostMerge<RecordType>>(&tasks[i], fds, start_ptrs);
         writers.push_back(std::move(writer));
-        close(out_fd);
+        // close(out_fd);
     }
 
     auto start = std::chrono::high_resolution_clock::now();
-    #pragma omp parallel for num_threads(config.num_threads)
     for (int i=0; i<config.num_threads; i++) {
         writers[i]->run();
     }

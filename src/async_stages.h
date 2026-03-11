@@ -29,8 +29,6 @@
 
 constexpr uint64_t DEFAULT_READ_CHUNK_BYTES = 512 * 1024;  // 512 KB
 
-constexpr uint32_t PREFETCH_DEPTH = 4;
-
 inline uint64_t align_up_block(uint64_t size) {
     const uint64_t mask = io_uring_utils::BLOCK_ALIGN - 1;
     return (size + mask) & ~mask;
@@ -85,6 +83,7 @@ void read_run_and_extract_keys(int fd, uint64_t thread_id, uint64_t run_size_byt
 ) {
     using KeyIndexPair = KeyValuePair<RecordType::KEY_LENGTH, sizeof(uint64_t)>;
     constexpr uint32_t ELEM_SIZE = sizeof(RecordType);
+    constexpr uint32_t PREFETCH_DEPTH = 4;
 
     uint64_t io_processing_time = 0;
 
@@ -423,33 +422,29 @@ class ValueWriterPostMerge {
     static constexpr uint64_t WRITE_IO_BYTES = 120 * 1024;
 
     static constexpr uint64_t READ_IO_CHUNK = 120 * 1024;
-
-    int out_fd;                         // Output file containing key-value pairs
     
     MergeTask<KeyIndexPair> *task;
     
     std::vector<void*> write_bufs;      // Set of pre-allocated buffers used for writing out
-
-    std::queue<uint32_t> slots;
     
     std::unique_ptr<io_uring_utils::UringRing> ring;
 
     std::vector<std::unique_ptr<AsyncValueReader>> readers;
 
+    static constexpr uint64_t PREFETCH_DEPTH = 16;
+    
     static constexpr uint64_t NUM_SLOTS = PREFETCH_DEPTH * 4;
 
     static constexpr uint32_t BATCH_SIZE = 1;
 public:
     uint64_t io_processing_time_us;
 
-    explicit ValueWriterPostMerge(MergeTask<KeyIndexPair> *task, int out_fd, 
+    explicit ValueWriterPostMerge(MergeTask<KeyIndexPair> *task, 
         std::vector<int> &in_fds, std::vector<KeyIndexPair*> &start_ptrs)
             : task(task), io_processing_time_us(0ll) {
         assert(in_fds.size() == start_ptrs.size());
         assert(in_fds.size() > 0 && "in_fds must not be empty");
         assert(WRITE_IO_BYTES % RecordType::VALUE_LENGTH == 0);
-        
-        this->out_fd = dup(out_fd);
 
         for (int i=0; i<in_fds.size(); i++) {
             int fd = dup(in_fds[i]);
@@ -459,8 +454,8 @@ public:
             readers.push_back(std::move(reader));
         }
 
-        write_bufs.resize(NUM_SLOTS);
-        for (uint32_t i=0; i<NUM_SLOTS; i++) {
+        write_bufs.resize(1);
+        for (uint32_t i=0; i<1; i++) {
             int ret = posix_memalign(&write_bufs[i], io_uring_utils::BLOCK_ALIGN, WRITE_IO_BYTES);
             assert(ret == 0);
             memset(write_bufs[i], 0, WRITE_IO_BYTES);
@@ -468,7 +463,6 @@ public:
     }
 
     ~ValueWriterPostMerge() {
-        close(out_fd);
         for (void *buf: write_bufs) {
             free(buf);
         }
@@ -486,8 +480,7 @@ public:
 
         if ((cqe->user_data >> 32) < NUM_SLOTS) {
             // spdlog::debug("Processing write completion");
-            uint32_t slot = (cqe->user_data >> 32);
-            slots.push(slot);
+            spdlog::warn("Unreachable");
         } else {
             int reader_idx = (cqe->user_data >> 16) & 0xffff;
             // spdlog::debug("Reader idx: {}", reader_idx);
@@ -506,9 +499,6 @@ public:
         uint32_t ring_num_entries = NUM_SLOTS + readers.size();
         ring = std::make_unique<io_uring_utils::UringRing>(ring_num_entries);
 
-        for (uint32_t i=0; i<NUM_SLOTS; i++) {
-            slots.push(i);
-        }
         uint64_t records_emitted = 0ll;
         KeyIndexPair *sorted_keys = (KeyIndexPair*)task->output;
 
@@ -520,19 +510,12 @@ public:
             }
         }
         ring->submit_and_wait(0);
-        uint64_t out_file_offset = 0ll;
 
         while (records_emitted < task->total_records_sorted) {
-            while (slots.empty()) {
-                auto io_start = std::chrono::high_resolution_clock::now();
-                poll_completions();
-                auto io_end = std::chrono::high_resolution_clock::now();
-                io_processing_time_us += std::chrono::duration_cast<std::chrono::microseconds>(io_end - io_start).count();          
-            }
-            uint32_t slot = slots.front();
-            slots.pop();
             uint64_t num_records_in_batch = std::min(task->total_records_sorted - records_emitted, WRITE_IO_BYTES / sizeof(RecordType));
-            RecordType *out_buf = reinterpret_cast<RecordType*>(write_bufs[slot]);
+            // Sorted output is not written back to disk. So write is essentially a no-op
+            // TODO(): We should also test with more write buffers to check cache interactions
+            RecordType *out_buf = reinterpret_cast<RecordType*>(write_bufs[0]);
             uint64_t offset = 0;
 
             for (uint64_t i=0; i<num_records_in_batch; i++) {
@@ -567,14 +550,6 @@ public:
                 std::memcpy(&out_buf[i].value, value, RecordType::VALUE_LENGTH);
                 sorted_keys++;
             }
-            auto io_start = std::chrono::high_resolution_clock::now();
-            ring->prepare_write(out_fd, write_bufs[slot], num_records_in_batch * sizeof(RecordType), 
-                out_file_offset, (uint64_t)slot << 32);
-            ring->submit_and_wait(0);
-
-            auto io_end = std::chrono::high_resolution_clock::now();
-            io_processing_time_us += std::chrono::duration_cast<std::chrono::microseconds>(io_end - io_start).count();
-            out_file_offset += num_records_in_batch * sizeof(RecordType);
             records_emitted += num_records_in_batch;
         }
         spdlog::debug("End post-merge ops");
