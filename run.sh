@@ -7,8 +7,10 @@ VALUE_SIZE=8
 MEMORY_SIZE="100M"
 READ_CHUNK_SIZE="100M"
 NUM_THREADS=1
+NUM_THREADS_POST_MERGE=0
 WORKING_DIR=$(realpath ".")
 ENABLE_PROFILE=false
+USE_PROBEX=false
 PROFILE_OUTPUT="perf.data"
 FLAMEGRAPH_OUTPUT="flamegraph.svg"
 SEPARATE_VALUES=false
@@ -25,9 +27,11 @@ show_usage() {
     echo "  --value-size SIZE          Value size in bytes (default: 8)"
     echo "  --memory-size SIZE         Memory size (default: 100M)"
     echo "  --num-threads COUNT        Number of threads for parallel sorting (default: 1)"
+    echo "  --num-threads-post-merge COUNT  Threads for post-merge reconciliation (default: num-threads)"
     echo "  --working-dir DIR          Working directory (default: .)"
     echo "  --profile                  Enable perf profiling"
     echo "  --profile-output FILE      Perf output file (default: perf.data)"
+    echo "  --use-probex               Use probex for profiling"
     echo "  --flamegraph-output FILE   Flamegraph output file (default: flamegraph.svg)"
     echo "  --help, -h                 Show this help message"
     echo ""
@@ -63,6 +67,10 @@ while [[ $# -gt 0 ]]; do
             NUM_THREADS="$2"
             shift 2
             ;;
+        --num-threads-post-merge)
+            NUM_THREADS_POST_MERGE="$2"
+            shift 2
+            ;;
         --working-dir)
             WORKING_DIR="$2"
             # Convert to absolute path
@@ -91,6 +99,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --use-async)
             USE_ASYNC_IO=true
+            shift
+            ;;
+        --use-probex)
+            USE_PROBEX=true
             shift
             ;;
         --help|-h)
@@ -152,6 +164,10 @@ CMD_ARGS="--file-size $FILE_SIZE --key-size $KEY_SIZE --value-size $VALUE_SIZE"
 CMD_ARGS="$CMD_ARGS --memory-size $MEMORY_SIZE"
 CMD_ARGS="$CMD_ARGS --num-threads $NUM_THREADS --working-dir $WORKING_DIR"
 
+if [ "$NUM_THREADS_POST_MERGE" -gt 0 ] 2>/dev/null; then
+    CMD_ARGS="$CMD_ARGS --num-threads-post-merge $NUM_THREADS_POST_MERGE"
+fi
+
 if [ "$SEPARATE_VALUES" = true ]; then
     CMD_ARGS="$CMD_ARGS --separate-values"
 fi
@@ -167,6 +183,9 @@ echo "  Value size: $VALUE_SIZE"
 echo "  Memory size: $MEMORY_SIZE"
 echo "  Read chunk size: $READ_CHUNK_SIZE"
 echo "  Number of threads: $NUM_THREADS"
+if [ "$NUM_THREADS_POST_MERGE" -gt 0 ] 2>/dev/null; then
+    echo "  Post-merge threads: $NUM_THREADS_POST_MERGE"
+fi
 echo "  Working directory: $WORKING_DIR"
 echo ""
 
@@ -210,6 +229,8 @@ if [ "$ENABLE_PROFILE" = true ]; then
         echo "Sorter failed!"
         exit 1
     fi
+elif [ "$USE_PROBEX" = true]; then
+    sudo nix run github:XiangpengHao/probex -- ./src/sorter $CMD_ARGS
 else
     echo "Running sorter..."
     ./src/sorter $CMD_ARGS
