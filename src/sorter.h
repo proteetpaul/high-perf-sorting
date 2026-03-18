@@ -180,7 +180,7 @@ void Sorter<RecordType>::write_back_values(std::vector<RecordType> &original,
     int ref_fd = init_perf_counter(PERF_COUNT_HW_CACHE_REFERENCES);
 
     spdlog::debug("Start writing back values");
-    DTRACE_PROBE("sorter", "start_value_write_back");
+    DTRACE_PROBE(sorter, start_value_write_back);
     auto start = std::chrono::high_resolution_clock::now();
 
     #pragma omp parallel for num_threads(config.num_threads)
@@ -191,7 +191,7 @@ void Sorter<RecordType>::write_back_values(std::vector<RecordType> &original,
     }
     auto end = std::chrono::high_resolution_clock::now();
     timing_info.value_write_back += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
-    DTRACE_PROBE("sorter", "end_value_write_back");
+    DTRACE_PROBE(sorter, end_value_write_back);
     spdlog::debug("Done writing back values");
 
     uint64_t lld_misses = read_perf_counter(miss_fd);
@@ -221,7 +221,7 @@ template <typename RecordType>
 template <uint32_t ValueLength>
 void Sorter<RecordType>::in_place_sort(std::vector<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>> &vec) {
     spdlog::debug("Start in-place sort");
-    DTRACE_PROBE("sorter", "start_in_place_sort");
+    DTRACE_PROBE(sorter, start_in_place_sort);
     int miss_fd = init_perf_counter(PERF_COUNT_HW_CACHE_MISSES);
     int ref_fd = init_perf_counter(PERF_COUNT_HW_CACHE_REFERENCES);
     int cycles_fd = init_perf_counter(PERF_COUNT_HW_CPU_CYCLES);
@@ -262,7 +262,7 @@ void Sorter<RecordType>::in_place_sort(std::vector<KeyValuePair<RecordType::KEY_
     
     // float tlb_miss_rate = tlb_misses * 100.0f / (tlb_misses + tlb_refs);
     // spdlog::info("TLB miss rate: {}", tlb_miss_rate);
-    DTRACE_PROBE("sorter", "end_in_place_sort");
+    DTRACE_PROBE(sorter, end_in_place_sort);
     timing_info.sort_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
 }
 
@@ -397,13 +397,6 @@ void Sorter<RecordType>::sort() {
         write_output_chunk(output.data(), config.file_size_bytes);
         return;
     }
-
-    uint64_t memory_size_bytes = config.run_size_bytes;
-    uint64_t merge_chunk_size_bytes = (memory_size_bytes / (num_runs + 1));
-    // align this to 4096 bytes for direct IO
-    merge_chunk_size_bytes = (merge_chunk_size_bytes / Config::BLOCK_SIZE_ALIGN) * Config::BLOCK_SIZE_ALIGN;
-    config.merge_read_chunk_size = merge_chunk_size_bytes;
-    config.merge_write_chunk_size = merge_chunk_size_bytes;
 
     std::vector<SortedRun> sorted_runs;
     std::vector<std::vector<KeyIndexPair>> key_index_pairs(num_runs);
@@ -591,10 +584,10 @@ void Sorter<RecordType>::write_back_values_post_merge(std::vector<int> &fds,
         memset(sorted_output, 0, alloc_sz);
         output_ptrs.push_back(sorted_output);
     }
-    DTRACE_PROBE("sorter", "start_post_merge");
+    DTRACE_PROBE(sorter, start_post_merge);
     auto start = std::chrono::high_resolution_clock::now();
 
-    // Observe single threaded performance as part of POC
+    #pragma omp parallel for num_threads(config.num_threads_post_merge)
     for (int i=0; i<tasks.size(); i++) {
         void *sorted_output = output_ptrs[i];
         std::vector<ValueReader> value_readers;
@@ -617,7 +610,7 @@ void Sorter<RecordType>::write_back_values_post_merge(std::vector<int> &fds,
         }
     }
     auto end = std::chrono::high_resolution_clock::now();
-    DTRACE_PROBE("sorter", "end_post_merge");
+    DTRACE_PROBE(sorter, end_post_merge);
 
     timing_info.value_write_back_post_merge += std::chrono::duration_cast<std::chrono::microseconds>(end-start).count() / 1000.0;
 
@@ -657,18 +650,23 @@ void Sorter<RecordType>::write_back_values_post_merge_async(std::vector<int> &fd
         writers.push_back(std::move(writer));
     }
 
-    DTRACE_PROBE("sorter", "start_post_merge");
+    DTRACE_PROBE(sorter, start_post_merge);
     auto start = std::chrono::high_resolution_clock::now();
+
+    #pragma omp parallel for num_threads(config.num_threads_post_merge)
     for (int i=0; i<config.num_threads; i++) {
         writers[i]->run();
     }
+    DTRACE_PROBE(sorter, end_post_merge);
+    auto end = std::chrono::high_resolution_clock::now();
 
     auto total_io_processing_time = 0ll;
+    auto total_records_sorted = 0ll;
     for (int i=0; i<config.num_threads; i++) {
         total_io_processing_time += writers[i]->io_processing_time_us;
+        total_records_sorted += tasks[i].total_records_sorted;
     }
-    DTRACE_PROBE("sorter", "end_post_merge");
-    auto end = std::chrono::high_resolution_clock::now();
-    spdlog::info("Average IO processing time in post-merge step: {} ms", total_io_processing_time / (1000.0f * config.num_threads));
+    spdlog::info("Total records during reconciliation step: {}", total_records_sorted);
+    spdlog::info("Average IO processing time in post-merge step: {} ms", total_io_processing_time / (1000.0f * config.num_threads_post_merge));
     timing_info.value_write_back_post_merge = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
 }

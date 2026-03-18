@@ -10,7 +10,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-format -Wno-register -Wno-unused-va
     -Wno-ignored-attributes")
 
 # Set optimization flags
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native -mtune=native")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -UNDEBUG -march=native -mtune=native")
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
 
 # Set default build type to Release for better performance

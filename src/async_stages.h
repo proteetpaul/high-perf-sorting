@@ -309,7 +309,7 @@ public:
 
 class AsyncValueReader {
 public:
-    static constexpr int PREFETCH_DEPTH = 4;
+    static constexpr int PREFETCH_DEPTH = 5;
     static constexpr int BUF_MASK = 7;
 
     // Keeps things simple by avoiding the case where the next buffer to be read is currently in use.
@@ -448,11 +448,8 @@ class ValueWriterPostMerge {
 
     std::vector<std::unique_ptr<AsyncValueReader>> readers;
 
-    static constexpr uint64_t PREFETCH_DEPTH = 16;
-    
-    static constexpr uint64_t NUM_SLOTS = PREFETCH_DEPTH * 4;
+    static constexpr uint64_t NUM_SLOTS = 128;
 
-    static constexpr uint32_t BATCH_SIZE = 1;
 public:
     uint64_t io_processing_time_us;
 

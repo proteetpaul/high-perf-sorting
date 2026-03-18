@@ -7,13 +7,12 @@ struct Config {
 
     uint32_t num_threads;
 
+    // Number of threads to use for the post-merge reconciliation of keys and values 
+    uint32_t num_threads_post_merge;
+
     uint64_t run_size_bytes;        
 
     uint64_t file_size_bytes;
-
-    uint32_t merge_read_chunk_size;     // Chunk size for reading from the intermediate sorted runs
-
-    uint32_t merge_write_chunk_size;    // Chunk size for writing to the output file
 
     std::string input_file;
 

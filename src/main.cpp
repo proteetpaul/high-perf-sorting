@@ -19,6 +19,7 @@ struct ParsedArgs {
     size_t value_size;
     size_t memory_size;
     uint32_t num_threads;
+    uint32_t num_threads_post_merge;
     bool separate_values;
     bool use_std_sort;
     bool use_async;
@@ -106,6 +107,7 @@ void printHelp(const char* program_name) {
     std::cout << "  --memory-size <size>             Memory size with unit (default: 100M)\n";
     std::cout << "  --read-chunk-size <size>         Read chunk size with unit (default: 100M)\n";
     std::cout << "  --num-threads <count>            Number of threads for parallel sorting (default: 1)\n";
+    std::cout << "  --num-threads-post-merge <count> Threads for post-merge key-value reconciliation (default: num-threads)\n";
     std::cout << "  --use-async                      Use io_uring\n";
     std::cout << "  --help, -h                       Show this help message\n";
     std::cout << "\nSize units: B (bytes), K (KB), M (MB), G (GB)\n";
@@ -120,6 +122,7 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
     args.value_size = 90;
     args.memory_size = parseSizeString("100M");  // 100MB default
     args.num_threads = 1;  // 1 thread default
+    args.num_threads_post_merge = 0;  // 0 means inherit from num_threads
     args.separate_values = false;
     args.use_async = false;
     
@@ -145,6 +148,9 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
             }
             else if (arg == "--num-threads" && i + 1 < argc) {
                 args.num_threads = std::stoul(argv[++i]);
+            }
+            else if (arg == "--num-threads-post-merge" && i + 1 < argc) {
+                args.num_threads_post_merge = std::stoul(argv[++i]);
             }
             else if (arg == "--help" || arg == "-h") {
                 printHelp(argv[0]);
@@ -198,6 +204,8 @@ int main(int argc, char* argv[]) {
     
     Config config;
     config.num_threads = args.num_threads;
+    config.num_threads_post_merge = args.num_threads_post_merge > 0
+        ? args.num_threads_post_merge : args.num_threads;
     config.run_size_bytes = args.memory_size;
     config.file_size_bytes = args.input_bytes;
     std::string file_size_str = formatFileSize(args.input_bytes);
