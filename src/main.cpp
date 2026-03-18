@@ -21,7 +21,7 @@ struct ParsedArgs {
     uint32_t num_threads;
     bool separate_values;
     bool use_std_sort;
-    bool use_async;
+    IoMode io_mode;
 };
 
 size_t parseSizeString(const std::string& sizeStr) {
@@ -107,6 +107,7 @@ void printHelp(const char* program_name) {
     std::cout << "  --read-chunk-size <size>         Read chunk size with unit (default: 100M)\n";
     std::cout << "  --num-threads <count>            Number of threads for parallel sorting (default: 1)\n";
     std::cout << "  --use-async                      Use io_uring\n";
+    std::cout << "  --use-mmap                       Use mmap for IO\n";
     std::cout << "  --help, -h                       Show this help message\n";
     std::cout << "\nSize units: B (bytes), K (KB), M (MB), G (GB)\n";
     std::cout << "Examples: 1M, 512K, 2G, 1024B\n";
@@ -121,7 +122,7 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
     args.memory_size = parseSizeString("100M");  // 100MB default
     args.num_threads = 1;  // 1 thread default
     args.separate_values = false;
-    args.use_async = false;
+    args.io_mode = IoMode::POSIX;
     
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -157,7 +158,10 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
                 args.use_std_sort = true;
             }
             else if (arg == "--use-async") {
-                args.use_async = true;
+                args.io_mode = IoMode::IO_URING;
+            }
+            else if (arg == "--use-mmap") {
+                args.io_mode = IoMode::MMAP;
             }
             else {
                 std::cerr << "Unknown argument: " << arg << std::endl;
@@ -206,7 +210,7 @@ int main(int argc, char* argv[]) {
     config.intermediate_file_prefix = args.working_dir + "/intermediate-" + file_size_str;
     config.separate_values = args.separate_values;
     config.use_std_sort = args.use_std_sort;
-    config.use_async = args.use_async;
+    config.io_mode = args.io_mode;
     
     if (args.key_size == 8 && args.value_size == 8) {
         Sorter<KeyValuePair<8, 8>> sorter(std::move(config));

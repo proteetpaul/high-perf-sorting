@@ -2,6 +2,12 @@
 #include <cstdint>
 #include <string>
 
+enum class IoMode {
+    POSIX,
+    IO_URING,
+    MMAP
+};
+
 struct Config {
     static constexpr uint32_t BLOCK_SIZE_ALIGN = 4096;
 
@@ -25,8 +31,8 @@ struct Config {
 
     bool use_std_sort;
 
-    /** If true, use io_uring for phase 1+2 (read + extract keys). Requires liburing. */
-    bool use_async{false};
+    /** IO mode: POSIX (pread/pwrite), IO_URING (liburing), or MMAP. */
+    IoMode io_mode{IoMode::POSIX};
 
     inline uint64_t num_runs() {
         return (file_size_bytes + run_size_bytes - 1) / run_size_bytes;

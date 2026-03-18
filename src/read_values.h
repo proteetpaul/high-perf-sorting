@@ -45,3 +45,19 @@ struct ValueReader {
         return res;
     }
 };
+
+struct MmapValueReader {
+    uint8_t *base;
+    uint32_t value_length;
+    uint64_t offset;
+
+    MmapValueReader(uint8_t *base, uint32_t value_length, uint64_t start_record_offset)
+        : base(base), value_length(value_length),
+          offset(start_record_offset * value_length) {}
+
+    inline void *read_next() {
+        void *res = base + offset;
+        offset += value_length;
+        return res;
+    }
+};
