@@ -645,7 +645,6 @@ void Sorter<RecordType>::write_back_values_post_merge_async(std::vector<int> &fd
 
     std::vector<std::unique_ptr<ValueWriterPostMerge<RecordType>>> writers;
     for (int i=0; i<config.num_threads; i++) {
-        std::string path = config.output_file + "-task-" + std::to_string(i);
         auto writer = std::make_unique<ValueWriterPostMerge<RecordType>>(&tasks[i], fds, start_ptrs);
         writers.push_back(std::move(writer));
     }
@@ -662,11 +661,14 @@ void Sorter<RecordType>::write_back_values_post_merge_async(std::vector<int> &fd
 
     auto total_io_processing_time = 0ll;
     auto total_records_sorted = 0ll;
+    uint64_t reads_beyond_eof = 0ll;
     for (int i=0; i<config.num_threads; i++) {
         total_io_processing_time += writers[i]->io_processing_time_us;
         total_records_sorted += tasks[i].total_records_sorted;
+        reads_beyond_eof += writers[i]->reads_beyond_eof();
     }
     spdlog::info("Total records during reconciliation step: {}", total_records_sorted);
+    spdlog::info("Reads beyond eof: {}", reads_beyond_eof);
     spdlog::info("Average IO processing time in post-merge step: {} ms", total_io_processing_time / (1000.0f * config.num_threads_post_merge));
     timing_info.value_write_back_post_merge = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
 }

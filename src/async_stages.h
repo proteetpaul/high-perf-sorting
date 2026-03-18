@@ -14,11 +14,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <fcntl.h>
 #include <linux/fs.h>
 #include <memory>
 #include <optional>
 #include <queue>
 #include <vector>
+#include <sys/stat.h>
 
 #include "config.h"
 #include "merge.h"
@@ -328,6 +330,8 @@ private:
     uint64_t file_offset;    // Offset within the file
     uint64_t end_file_offset;
     int reader_id;
+    uint64_t file_size;
+    
     
     void *ptr[BUF_MASK+1];          // Used like a ring
     BufState states[BUF_MASK+1];
@@ -338,6 +342,7 @@ private:
     uint32_t last_submitted;        // Buffer index that was last submitted for IO
     // Note: `cur_buf_idx` and `last_submitted` don't wrap around; should always be masked with `BUF_MASK` before indexing into states or `ptr`
 public:
+    uint64_t reads_beyond_eof;
     inline bool waiting_for_io() {
         // spdlog::debug("cur_buf_idx of stream {}: {}", reader_id, cur_buf_idx);
         return states[cur_buf_idx & BUF_MASK] != BufState::IoCompleted;
@@ -348,6 +353,12 @@ public:
      *  skips (logical_start_offset % BLOCK_ALIGN) bytes. */
     AsyncValueReader(int fd, uint64_t logical_start_offset, uint64_t value_length, uint64_t read_chunk_size, int reader_id):
         fd(fd), value_length_bytes(value_length), reader_id(reader_id), read_chunk_size(read_chunk_size) {
+        struct stat *buf;
+        fstat(fd, buf);
+        file_size = buf->st_size;
+        reads_beyond_eof = 0ll;
+        free(buf);
+
         uint64_t aligned_offset = (logical_start_offset / io_uring_utils::BLOCK_ALIGN) * io_uring_utils::BLOCK_ALIGN;
         uint64_t initial_skip_bytes = logical_start_offset - aligned_offset;
         file_offset = aligned_offset;
@@ -421,6 +432,7 @@ public:
             ptr[last_submitted & BUF_MASK], read_chunk_size, 
             fd, file_offset, user_data
         };
+        reads_beyond_eof += task.offset >= file_size;
         file_offset += read_chunk_size;
         return task;
         // uint64_t next_buf_idx = (states[cur_buf_idx] == Empty) ? cur_buf_idx: cur_buf_idx ^ 1;
@@ -452,6 +464,14 @@ class ValueWriterPostMerge {
 
 public:
     uint64_t io_processing_time_us;
+
+    uint64_t reads_beyond_eof() {
+        uint64_t res = 0;
+        for (auto &reader: readers) {
+            res += reader->reads_beyond_eof;
+        }
+        return res;
+    }
 
     explicit ValueWriterPostMerge(MergeTask<KeyIndexPair> *task, 
         std::vector<int> &in_fds, std::vector<KeyIndexPair*> &start_ptrs)
@@ -498,6 +518,9 @@ public:
         } else {
             int reader_idx = (cqe->user_data >> 16) & 0xffff;
             // spdlog::debug("Reader idx: {}", reader_idx);
+            if (cqe->res < 0) {
+                spdlog::error("Cqe->res: {}",cqe->res);
+            }
             readers[reader_idx]->process_io_completion(cqe->user_data);
             auto task = readers[reader_idx]->get_next_io();
             if (task.has_value()) {
