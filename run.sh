@@ -220,7 +220,7 @@ if [ "$ENABLE_PROFILE" = true ]; then
         FLAMEGRAPH_DIR="$ROOT_DIR/FlameGraph"
         
         if [ -f "$FLAMEGRAPH_DIR/flamegraph.pl" ] && [ -f "$FLAMEGRAPH_DIR/stackcollapse-perf.pl" ]; then
-            perf script -i "$PROFILE_OUTPUT" | "$FLAMEGRAPH_DIR/stackcollapse-perf.pl" | "$FLAMEGRAPH_DIR/flamegraph.pl" > "$FLAMEGRAPH_OUTPUT"
+            perf script -i "$PROFILE_OUTPUT" | perl "$FLAMEGRAPH_DIR/stackcollapse-perf.pl" | perl "$FLAMEGRAPH_DIR/flamegraph.pl" > "$FLAMEGRAPH_OUTPUT"
             echo "Flamegraph saved to: $FLAMEGRAPH_OUTPUT"
         else
             echo "Error: Local FlameGraph scripts not found in $FLAMEGRAPH_DIR"
@@ -229,7 +229,7 @@ if [ "$ENABLE_PROFILE" = true ]; then
         echo "Sorter failed!"
         exit 1
     fi
-elif [ "$USE_PROBEX" = true]; then
+elif [ "$USE_PROBEX" = true ]; then
     sudo nix run github:XiangpengHao/probex -- ./src/sorter $CMD_ARGS
 else
     echo "Running sorter..."

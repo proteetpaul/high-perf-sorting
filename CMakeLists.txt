@@ -9,6 +9,7 @@ add_subdirectory(spdlog)
 
 include_directories(spdlog/include)
 include_directories(origami-sort)
+include_directories(external)
 add_subdirectory(src)
 
 add_subdirectory(ips4o)
