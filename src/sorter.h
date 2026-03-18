@@ -5,7 +5,6 @@
 #include <sched.h>
 #include <cstdint>
 #include <cstring>
-#include <iostream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -14,10 +13,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <chrono>
-#include <iomanip>
 #include <parallel/algorithm>
 #include <algorithm>
 #include <sys/mman.h>
+#include <sys/sdt.h>
 #include <errno.h>
 
 #include <pthread.h>
@@ -181,6 +180,7 @@ void Sorter<RecordType>::write_back_values(std::vector<RecordType> &original,
     int ref_fd = init_perf_counter(PERF_COUNT_HW_CACHE_REFERENCES);
 
     spdlog::debug("Start writing back values");
+    DTRACE_PROBE("sorter", "start_value_write_back");
     auto start = std::chrono::high_resolution_clock::now();
 
     #pragma omp parallel for num_threads(config.num_threads)
@@ -191,6 +191,7 @@ void Sorter<RecordType>::write_back_values(std::vector<RecordType> &original,
     }
     auto end = std::chrono::high_resolution_clock::now();
     timing_info.value_write_back += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
+    DTRACE_PROBE("sorter", "end_value_write_back");
     spdlog::debug("Done writing back values");
 
     uint64_t lld_misses = read_perf_counter(miss_fd);
@@ -220,6 +221,7 @@ template <typename RecordType>
 template <uint32_t ValueLength>
 void Sorter<RecordType>::in_place_sort(std::vector<KeyValuePair<RecordType::KEY_LENGTH, ValueLength>> &vec) {
     spdlog::debug("Start in-place sort");
+    DTRACE_PROBE("sorter", "start_in_place_sort");
     int miss_fd = init_perf_counter(PERF_COUNT_HW_CACHE_MISSES);
     int ref_fd = init_perf_counter(PERF_COUNT_HW_CACHE_REFERENCES);
     int cycles_fd = init_perf_counter(PERF_COUNT_HW_CPU_CYCLES);
@@ -260,7 +262,7 @@ void Sorter<RecordType>::in_place_sort(std::vector<KeyValuePair<RecordType::KEY_
     
     // float tlb_miss_rate = tlb_misses * 100.0f / (tlb_misses + tlb_refs);
     // spdlog::info("TLB miss rate: {}", tlb_miss_rate);
-
+    DTRACE_PROBE("sorter", "end_in_place_sort");
     timing_info.sort_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
 }
 
@@ -589,6 +591,7 @@ void Sorter<RecordType>::write_back_values_post_merge(std::vector<int> &fds,
         memset(sorted_output, 0, alloc_sz);
         output_ptrs.push_back(sorted_output);
     }
+    DTRACE_PROBE("sorter", "start_post_merge");
     auto start = std::chrono::high_resolution_clock::now();
 
     // Observe single threaded performance as part of POC
@@ -614,6 +617,7 @@ void Sorter<RecordType>::write_back_values_post_merge(std::vector<int> &fds,
         }
     }
     auto end = std::chrono::high_resolution_clock::now();
+    DTRACE_PROBE("sorter", "end_post_merge");
 
     timing_info.value_write_back_post_merge += std::chrono::duration_cast<std::chrono::microseconds>(end-start).count() / 1000.0;
 
@@ -649,15 +653,11 @@ void Sorter<RecordType>::write_back_values_post_merge_async(std::vector<int> &fd
     std::vector<std::unique_ptr<ValueWriterPostMerge<RecordType>>> writers;
     for (int i=0; i<config.num_threads; i++) {
         std::string path = config.output_file + "-task-" + std::to_string(i);
-        // int out_fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC | O_DIRECT, 0644);
-        // posix_fallocate64(out_fd, 0ll, sizeof(RecordType) * tasks[i].total_records_sorted);
-        // assert(out_fd != -1);
-
         auto writer = std::make_unique<ValueWriterPostMerge<RecordType>>(&tasks[i], fds, start_ptrs);
         writers.push_back(std::move(writer));
-        // close(out_fd);
     }
 
+    DTRACE_PROBE("sorter", "start_post_merge");
     auto start = std::chrono::high_resolution_clock::now();
     for (int i=0; i<config.num_threads; i++) {
         writers[i]->run();
@@ -667,6 +667,7 @@ void Sorter<RecordType>::write_back_values_post_merge_async(std::vector<int> &fd
     for (int i=0; i<config.num_threads; i++) {
         total_io_processing_time += writers[i]->io_processing_time_us;
     }
+    DTRACE_PROBE("sorter", "end_post_merge");
     auto end = std::chrono::high_resolution_clock::now();
     spdlog::info("Average IO processing time in post-merge step: {} ms", total_io_processing_time / (1000.0f * config.num_threads));
     timing_info.value_write_back_post_merge = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
