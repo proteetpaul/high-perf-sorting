@@ -686,6 +686,8 @@ void Sorter<RecordType>::benchmark_compression(std::vector<MergeTask<KeyIndexPai
 
     uint64_t uncompressed_bytes = total_records * sizeof(KeyIndexPair);
     uint64_t total_compressed = 0;
+    uint64_t total_compressed_keys = 0;
+    uint64_t total_compressed_indexes = 0;
     float total_compress_ms = 0;
     float total_decompress_ms = 0;
 
@@ -708,18 +710,34 @@ void Sorter<RecordType>::benchmark_compression(std::vector<MergeTask<KeyIndexPai
         }
 
         uint64_t comp_bytes = compressed.compressed_size_bytes();
+        uint64_t comp_keys = compressed.compressed_keys_size_bytes();
+        uint64_t comp_indexes = compressed.compressed_indexes_size_bytes();
         total_compressed += comp_bytes;
+        total_compressed_keys += comp_keys;
+        total_compressed_indexes += comp_indexes;
 
+        uint64_t raw_keys = n * sizeof(int64_t);
+        uint64_t raw_indexes = n * sizeof(uint64_t);
         float ratio = static_cast<float>(n * sizeof(KeyIndexPair)) / comp_bytes;
-        spdlog::info("  Task {}: {} records, compressed {} -> {} bytes ({:.2f}x), "
-                     "index_bits={}, num_chunks={}, avg_delta_width: {}",
+        spdlog::info("  Task {}: {} records, total {} -> {} bytes ({:.2f}x), "
+                     "keys {} -> {} bytes ({:.2f}x), indexes {} -> {} bytes ({:.2f}x), "
+                     "index_bits={}, num_chunks={}, avg_delta_width={:.1f}",
                      i, n, n * sizeof(KeyIndexPair), comp_bytes, ratio,
-                     compressed.index_bit_width, compressed.key_chunks.size(), 
+                     raw_keys, comp_keys, static_cast<float>(raw_keys) / comp_keys,
+                     raw_indexes, comp_indexes, static_cast<float>(raw_indexes) / comp_indexes,
+                     compressed.index_bit_width, compressed.key_chunks.size(),
                      compressed.average_delta_bit_width());
     }
 
+    uint64_t raw_keys_total = total_records * sizeof(int64_t);
+    uint64_t raw_indexes_total = total_records * sizeof(uint64_t);
     float overall_ratio = static_cast<float>(uncompressed_bytes) / total_compressed;
-    spdlog::info("Overall: {} -> {} bytes ({:.2f}x compression)",
-                 uncompressed_bytes, total_compressed, overall_ratio);
+    spdlog::info("Overall: {} -> {} bytes ({:.2f}x), "
+                 "keys {} -> {} bytes ({:.2f}x), indexes {} -> {} bytes ({:.2f}x)",
+                 uncompressed_bytes, total_compressed, overall_ratio,
+                 raw_keys_total, total_compressed_keys,
+                 static_cast<float>(raw_keys_total) / total_compressed_keys,
+                 raw_indexes_total, total_compressed_indexes,
+                 static_cast<float>(raw_indexes_total) / total_compressed_indexes);
     spdlog::info("=== End Compression Benchmark ===");
 }

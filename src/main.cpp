@@ -23,6 +23,8 @@ struct ParsedArgs {
     bool separate_values;
     bool use_std_sort;
     bool use_async;
+    bool benchmark_compression;
+    uint64_t compression_chunk_size;
 };
 
 size_t parseSizeString(const std::string& sizeStr) {
@@ -109,6 +111,8 @@ void printHelp(const char* program_name) {
     std::cout << "  --num-threads <count>            Number of threads for parallel sorting (default: 1)\n";
     std::cout << "  --num-threads-post-merge <count> Threads for post-merge key-value reconciliation (default: num-threads)\n";
     std::cout << "  --use-async                      Use io_uring\n";
+    std::cout << "  --benchmark-compression          Benchmark compression ratio after merge\n";
+    std::cout << "  --compression-chunk-size <count>  Delta-encoding chunk size (default: 256)\n";
     std::cout << "  --help, -h                       Show this help message\n";
     std::cout << "\nSize units: B (bytes), K (KB), M (MB), G (GB)\n";
     std::cout << "Examples: 1M, 512K, 2G, 1024B\n";
@@ -125,6 +129,8 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
     args.num_threads_post_merge = 0;  // 0 means inherit from num_threads
     args.separate_values = false;
     args.use_async = false;
+    args.benchmark_compression = false;
+    args.compression_chunk_size = 256;
     
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -165,6 +171,12 @@ int parseArguments(int argc, char* argv[], ParsedArgs& args) {
             else if (arg == "--use-async") {
                 args.use_async = true;
             }
+            else if (arg == "--benchmark-compression") {
+                args.benchmark_compression = true;
+            }
+            else if (arg == "--compression-chunk-size" && i + 1 < argc) {
+                args.compression_chunk_size = std::stoull(argv[++i]);
+            }
             else {
                 std::cerr << "Unknown argument: " << arg << std::endl;
                 std::cerr << "Use --help for usage information." << std::endl;
@@ -190,7 +202,7 @@ void pin_current_thread() {
 }
 
 int main(int argc, char* argv[]) {
-    spdlog::set_level(spdlog::level::debug);
+    spdlog::set_level(spdlog::level::info);
     // pin_current_thread();
     ParsedArgs args;
     int parse_result = parseArguments(argc, argv, args);
@@ -215,6 +227,8 @@ int main(int argc, char* argv[]) {
     config.separate_values = args.separate_values;
     config.use_std_sort = args.use_std_sort;
     config.use_async = args.use_async;
+    config.benchmark_compression = args.benchmark_compression;
+    config.compression_chunk_size = args.compression_chunk_size;
     
     if (args.key_size == 8 && args.value_size == 8) {
         Sorter<KeyValuePair<8, 8>> sorter(std::move(config));

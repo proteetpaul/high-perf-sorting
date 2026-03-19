@@ -184,13 +184,22 @@ struct CompressedKeyIndex {
         return static_cast<double>(sum) / key_chunks.size();
     }
 
-    uint64_t compressed_size_bytes() const {
-        uint64_t size = sizeof(*this);
-        size += packed_indexes.size();
+    uint64_t compressed_keys_size_bytes() const {
+        uint64_t size = 0;
         for (const auto& chunk : key_chunks) {
-            size += sizeof(KeyChunk);
+            size += sizeof(chunk.base_key) + sizeof(chunk.delta_bit_width) + sizeof(chunk.count);
             size += chunk.packed_deltas.size();
         }
         return size;
+    }
+
+    uint64_t compressed_indexes_size_bytes() const {
+        return packed_indexes.size() + sizeof(index_bit_width);
+    }
+
+    uint64_t compressed_size_bytes() const {
+        return sizeof(chunk_size) + sizeof(num_elements)
+             + compressed_keys_size_bytes()
+             + compressed_indexes_size_bytes();
     }
 };
