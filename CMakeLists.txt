@@ -12,4 +12,3 @@ include_directories(origami-sort)
 add_subdirectory(src)
 
 add_subdirectory(ips4o)
-add_subdirectory(bench)

@@ -14,6 +14,7 @@ FLAMEGRAPH_OUTPUT="flamegraph.svg"
 SEPARATE_VALUES=false
 ENABLE_MEMORY_PROFILING=false
 USE_ASYNC_IO=false
+USE_MMAP=false
 PCM_MEMORY="/users/proteet/pcm/build/bin/pcm-memory"
 
 # Function to show usage
@@ -29,6 +30,8 @@ show_usage() {
     echo "  --profile                  Enable perf profiling"
     echo "  --profile-output FILE      Perf output file (default: perf.data)"
     echo "  --flamegraph-output FILE   Flamegraph output file (default: flamegraph.svg)"
+    echo "  --use-async                Use io_uring async I/O"
+    echo "  --use-mmap                 Use mmap I/O"
     echo "  --help, -h                 Show this help message"
     echo ""
     echo "Size units: B (bytes), K (KB), M (MB), G (GB)"
@@ -91,6 +94,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --use-async)
             USE_ASYNC_IO=true
+            shift
+            ;;
+        --use-mmap)
+            USE_MMAP=true
             shift
             ;;
         --help|-h)
@@ -158,6 +165,10 @@ fi
 
 if [ "$USE_ASYNC_IO" = true ]; then
     CMD_ARGS="$CMD_ARGS --use-async"
+fi
+
+if [ "$USE_MMAP" = true ]; then
+    CMD_ARGS="$CMD_ARGS --use-mmap"
 fi
 
 echo "Running sorter with parameters:"
