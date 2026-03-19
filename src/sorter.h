@@ -400,13 +400,6 @@ void Sorter<RecordType>::sort() {
     read_fd = open(config.input_file.c_str(), read_fd_flags);
     write_fd = open(config.output_file.c_str(), write_fd_flags, 0644);
 
-    if (config.io_mode == IoMode::MMAP) {
-        input_mmap_ptr = static_cast<uint8_t*>(
-            mmap(nullptr, config.file_size_bytes, PROT_READ, MAP_PRIVATE, read_fd, 0));
-        assert(input_mmap_ptr != MAP_FAILED);
-        madvise(input_mmap_ptr, config.file_size_bytes, MADV_SEQUENTIAL);
-    }
-
     uint64_t num_runs = config.num_runs();
     if (num_runs == 1) {
         std::vector<RecordType> v, output;
@@ -421,6 +414,11 @@ void Sorter<RecordType>::sort() {
             sort_single_run(v.data(), output.data(), num_elements);
             write_output_chunk(output.data(), config.file_size_bytes);
         } else if (config.io_mode == IoMode::MMAP) {
+            input_mmap_ptr = static_cast<uint8_t*>(
+                mmap(nullptr, config.file_size_bytes, PROT_READ, MAP_PRIVATE, read_fd, 0));
+            assert(input_mmap_ptr != MAP_FAILED);
+            madvise(input_mmap_ptr, config.file_size_bytes, MADV_SEQUENTIAL);
+
             int ret = ftruncate(write_fd, config.file_size_bytes);
             assert(ret == 0);
             void *output_mmap_ptr = mmap(nullptr, config.file_size_bytes,
@@ -468,7 +466,12 @@ void Sorter<RecordType>::sort() {
                 write_intermediate_values(sorted_values, num_records_in_run * RecordType::VALUE_LENGTH, i)
             );
         } else if (config.io_mode == IoMode::MMAP) {
-            void *input_ptr = (uint8_t*)input_mmap_ptr + config.run_size_bytes * i;
+            input_mmap_ptr = static_cast<uint8_t*>(
+                mmap(nullptr, config.run_size_bytes, PROT_READ, MAP_PRIVATE, read_fd, i * config.run_size_bytes));
+            assert(input_mmap_ptr != MAP_FAILED);
+            madvise(input_mmap_ptr, config.file_size_bytes, MADV_SEQUENTIAL);
+
+            void *input_ptr = (uint8_t*)input_mmap_ptr;
             std::string file_name = config.intermediate_file_prefix + "-chunk-" + std::to_string(i);
             int fd = open(file_name.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0644);
             uint64_t map_size = num_records_in_run * RecordType::VALUE_LENGTH;
@@ -481,9 +484,18 @@ void Sorter<RecordType>::sort() {
             madvise(intermediate_mapped, map_size, MADV_SEQUENTIAL);
 
             generate_run_for_merge_sort(input_ptr, intermediate_mapped, key_index_pairs[i], i, num_records_in_run);
-            madvise(intermediate_mapped, map_size, MADV_DONTNEED);
             fds.push_back(fd);
             mapped_bufs.push_back(intermediate_mapped);
+            auto msync_start = std::chrono::high_resolution_clock::now();
+            msync(intermediate_mapped, map_size, MS_SYNC);
+            
+            auto msync_end = std::chrono::high_resolution_clock::now();
+            timing_info.intermediate_write += std::chrono::duration_cast<std::chrono::microseconds>(
+                msync_end - msync_start).count() / 1000.0f;
+            // madvise(intermediate_mapped, map_size, MADV_DONTNEED);
+
+            munmap(input_mmap_ptr, config.run_size_bytes);
+            input_mmap_ptr = nullptr;
         } else {
             spdlog::debug("Starting async read and key extraction");
             key_index_pairs[i].resize(v.size());
@@ -541,17 +553,6 @@ void Sorter<RecordType>::sort() {
     }
     free(sorted_values);
 
-    if (config.io_mode == IoMode::MMAP) {
-        uint64_t map_size = num_records_in_run * RecordType::VALUE_LENGTH;
-        auto msync_start = std::chrono::high_resolution_clock::now();
-        for (size_t i = 0; i < mapped_bufs.size(); i++) {
-            msync(mapped_bufs[i], map_size, MS_SYNC);
-        }
-        auto msync_end = std::chrono::high_resolution_clock::now();
-        timing_info.intermediate_write += std::chrono::duration_cast<std::chrono::microseconds>(
-            msync_end - msync_start).count() / 1000.0f;
-    }
-
     std::vector<MergeTask<KeyIndexPair>> tasks;
     merge(key_index_pairs, config.run_size_bytes / sizeof(RecordType), &tasks);
     if (config.io_mode == IoMode::IO_URING) {
@@ -560,11 +561,6 @@ void Sorter<RecordType>::sort() {
         write_back_values_post_merge_mmap(fds, mapped_bufs, tasks, key_index_pairs);
     } else {
         write_back_values_post_merge(fds, tasks, key_index_pairs);
-    }
-
-    if (input_mmap_ptr) {
-        munmap(input_mmap_ptr, config.file_size_bytes);
-        input_mmap_ptr = nullptr;
     }
 }
 
