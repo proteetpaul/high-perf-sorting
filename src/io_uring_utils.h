@@ -19,6 +19,7 @@ struct ReadTask {
     int fd;
     uint64_t offset;
     uint64_t user_data;
+    int buf_index;
 };
 
 /**
@@ -50,6 +51,11 @@ struct UringRing {
 
     struct io_uring* get() { return &ring_; }
 
+    bool register_buffers(struct iovec *iovecs, unsigned nr) {
+        int ret = io_uring_register_buffers(&ring_, iovecs, nr);
+        return ret == 0;
+    }
+
     bool prepare_read(int fd, void* buf, uint32_t len, uint64_t file_offset, uint64_t user_data) {
         struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
         if (!sqe) return false;
@@ -66,6 +72,24 @@ struct UringRing {
         io_uring_prep_read(sqe, task.fd, task.buf, task.bytes, task.offset);
         io_uring_sqe_set_data(sqe, reinterpret_cast<void*>(static_cast<uintptr_t>(task.user_data)));
         io_uring_sqe_set_flags(sqe, 0);
+        pending_++;
+        return true;
+    }
+
+    bool prepare_read_fixed(ReadTask &task) {
+        struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
+        if (!sqe) return false;
+        io_uring_prep_read_fixed(sqe, task.fd, task.buf, task.bytes, task.offset, task.buf_index);
+        io_uring_sqe_set_data(sqe, reinterpret_cast<void*>(static_cast<uintptr_t>(task.user_data)));
+        pending_++;
+        return true;
+    }
+
+    bool prepare_cancel_fd(int fd, unsigned int flags) {
+        struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
+        if (!sqe) return false;
+        io_uring_prep_cancel_fd(sqe, fd, flags);
+        io_uring_sqe_set_data(sqe, nullptr);
         pending_++;
         return true;
     }

@@ -343,6 +343,17 @@ private:
     // Note: `cur_buf_idx` and `last_submitted` don't wrap around; should always be masked with `BUF_MASK` before indexing into states or `ptr`
 public:
     uint64_t reads_beyond_eof;
+
+    int get_fd() const { return fd; }
+
+    static constexpr int num_buffers() { return BUF_MASK + 1; }
+
+    void get_buffer_iovecs(struct iovec *iovecs) const {
+        for (int i = 0; i <= BUF_MASK; i++) {
+            iovecs[i] = {ptr[i], read_chunk_size};
+        }
+    }
+
     inline bool waiting_for_io() {
         // spdlog::debug("cur_buf_idx of stream {}: {}", reader_id, cur_buf_idx);
         return states[cur_buf_idx & BUF_MASK] != BufState::IoCompleted;
@@ -353,16 +364,15 @@ public:
      *  skips (logical_start_offset % BLOCK_ALIGN) bytes. */
     AsyncValueReader(int fd, uint64_t logical_start_offset, uint64_t value_length, uint64_t read_chunk_size, int reader_id):
         fd(fd), value_length_bytes(value_length), reader_id(reader_id), read_chunk_size(read_chunk_size) {
-        struct stat *buf;
+        struct stat *buf = (struct stat*)malloc(sizeof(struct stat));
         fstat(fd, buf);
         file_size = buf->st_size;
         reads_beyond_eof = 0ll;
         free(buf);
 
-        uint64_t aligned_offset = (logical_start_offset / io_uring_utils::BLOCK_ALIGN) * io_uring_utils::BLOCK_ALIGN;
-        uint64_t initial_skip_bytes = logical_start_offset - aligned_offset;
+        uint64_t aligned_offset = (logical_start_offset / read_chunk_size) * read_chunk_size;
+        chunk_offset = logical_start_offset - aligned_offset;
         file_offset = aligned_offset;
-        chunk_offset = initial_skip_bytes;
         for (int i=0; i<=BUF_MASK; i++) {
             int ret = posix_memalign(&ptr[i], 4096, read_chunk_size);
             assert(ret == 0);
@@ -430,7 +440,8 @@ public:
         uint64_t user_data = (reader_id << 16) | last_submitted;
         io_uring_utils::ReadTask task {
             ptr[last_submitted & BUF_MASK], read_chunk_size, 
-            fd, file_offset, user_data
+            fd, file_offset, user_data,
+            reader_id * num_buffers() + static_cast<int>(last_submitted & BUF_MASK)
         };
         reads_beyond_eof += task.offset >= file_size;
         file_offset += read_chunk_size;
@@ -525,7 +536,7 @@ public:
             auto task = readers[reader_idx]->get_next_io();
             if (task.has_value()) {
                 task.value().user_data |= (NUM_SLOTS << 32);
-                ring->prepare_read(task.value());
+                ring->prepare_read_fixed(task.value());
             }
         }
         ring->mark_cqe_seen(cqe);
@@ -536,6 +547,13 @@ public:
         uint32_t ring_num_entries = AsyncValueReader::PREFETCH_DEPTH * readers.size();
         ring = std::make_unique<io_uring_utils::UringRing>(ring_num_entries);
 
+        std::vector<struct iovec> iovecs(readers.size() * AsyncValueReader::num_buffers());
+        for (size_t i = 0; i < readers.size(); i++) {
+            readers[i]->get_buffer_iovecs(&iovecs[i * AsyncValueReader::num_buffers()]);
+        }
+        bool reg_ok = ring->register_buffers(iovecs.data(), iovecs.size());
+        assert(reg_ok && "Failed to register fixed buffers with io_uring");
+
         uint64_t records_emitted = 0ll;
         KeyIndexPair *sorted_keys = (KeyIndexPair*)task->output;
 
@@ -543,7 +561,7 @@ public:
             auto task = reader->get_next_io();
             if (task.has_value()) {
                 task.value().user_data |= (NUM_SLOTS << 32);
-                ring->prepare_read(task.value());
+                ring->prepare_read_fixed(task.value());
             }
         }
         ring->submit_and_wait(0);
@@ -572,7 +590,7 @@ public:
                         auto task = readers[stream_id]->get_next_io();
                         assert(task.has_value() && "Task is null");
                         task.value().user_data |= (NUM_SLOTS << 32);
-                        ring->prepare_read(task.value());
+                        ring->prepare_read_fixed(task.value());
                     }
 
                     while (readers[stream_id]->waiting_for_io()) {

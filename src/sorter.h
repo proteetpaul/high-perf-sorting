@@ -16,9 +16,6 @@
 #include <parallel/algorithm>
 #include <algorithm>
 #include <sys/mman.h>
-#include <sys/sdt.h>
-#include <errno.h>
-
 #include <pthread.h>
 
 #include "io_uring_utils.h"
@@ -29,6 +26,7 @@
 #include "merge.h"
 #include "read_values.h"
 #include "async_stages.h"
+#include "sdt.h"
 
 #define _REENTRANT
 #include "ips4o.hpp"
