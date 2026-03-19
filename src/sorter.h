@@ -26,6 +26,7 @@
 #include "merge.h"
 #include "read_values.h"
 #include "async_stages.h"
+#include "compression.h"
 #include "sdt.h"
 
 #define _REENTRANT
@@ -116,6 +117,8 @@ class Sorter {
 
     void write_back_values_post_merge_async(std::vector<int> &fds, std::vector<MergeTask<KeyIndexPair>> &tasks,
         std::vector<std::vector<KeyIndexPair>> &key_index_pairs);
+
+    void benchmark_compression(std::vector<MergeTask<KeyIndexPair>> &tasks);
 
 public:
     Sorter(Config &&config) {
@@ -473,6 +476,9 @@ void Sorter<RecordType>::sort() {
     free(sorted_values);
     std::vector<MergeTask<KeyIndexPair>> tasks;
     merge(key_index_pairs, config.run_size_bytes / sizeof(RecordType), &tasks);
+    if (config.benchmark_compression) {
+        benchmark_compression(tasks);
+    }
     if (config.use_async) {
         write_back_values_post_merge_async(fds, tasks, key_index_pairs);
     } else {
@@ -669,4 +675,51 @@ void Sorter<RecordType>::write_back_values_post_merge_async(std::vector<int> &fd
     spdlog::info("Reads beyond eof: {}", reads_beyond_eof);
     spdlog::info("Average IO processing time in post-merge step: {} ms", total_io_processing_time / (1000.0f * config.num_threads_post_merge));
     timing_info.value_write_back_post_merge = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0f;
+}
+
+template <typename RecordType>
+void Sorter<RecordType>::benchmark_compression(std::vector<MergeTask<KeyIndexPair>> &tasks) {
+    static_assert(RecordType::KEY_LENGTH == 8, "Compression benchmark requires 8-byte keys");
+
+    uint64_t total_records = 0;
+    for (auto& t : tasks) total_records += t.total_records_sorted;
+
+    uint64_t uncompressed_bytes = total_records * sizeof(KeyIndexPair);
+    uint64_t total_compressed = 0;
+    float total_compress_ms = 0;
+    float total_decompress_ms = 0;
+
+    spdlog::info("=== Compression Benchmark ===");
+    spdlog::info("Chunk size: {}", config.compression_chunk_size);
+    spdlog::info("Total records across {} merge tasks: {}", tasks.size(), total_records);
+
+    for (size_t i = 0; i < tasks.size(); i++) {
+        auto* data = reinterpret_cast<KeyIndexPair*>(tasks[i].output);
+        uint64_t n = tasks[i].total_records_sorted;
+        if (n == 0) continue;
+
+        CompressedKeyIndex compressed(data, n, config.compression_chunk_size);
+        std::vector<KeyIndexPair> decompressed(n);
+        compressed.decompress(decompressed.data());
+
+        for (uint64_t j = 0; j < n; j++) {
+            assert(decompressed[j].key == data[j].key);
+            assert(decompressed[j].value == data[j].value);
+        }
+
+        uint64_t comp_bytes = compressed.compressed_size_bytes();
+        total_compressed += comp_bytes;
+
+        float ratio = static_cast<float>(n * sizeof(KeyIndexPair)) / comp_bytes;
+        spdlog::info("  Task {}: {} records, compressed {} -> {} bytes ({:.2f}x), "
+                     "index_bits={}, num_chunks={}, avg_delta_width: {}",
+                     i, n, n * sizeof(KeyIndexPair), comp_bytes, ratio,
+                     compressed.index_bit_width, compressed.key_chunks.size(), 
+                     compressed.average_delta_bit_width());
+    }
+
+    float overall_ratio = static_cast<float>(uncompressed_bytes) / total_compressed;
+    spdlog::info("Overall: {} -> {} bytes ({:.2f}x compression)",
+                 uncompressed_bytes, total_compressed, overall_ratio);
+    spdlog::info("=== End Compression Benchmark ===");
 }

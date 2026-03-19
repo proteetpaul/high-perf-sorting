@@ -16,6 +16,8 @@ FLAMEGRAPH_OUTPUT="flamegraph.svg"
 SEPARATE_VALUES=false
 ENABLE_MEMORY_PROFILING=false
 USE_ASYNC_IO=false
+BENCHMARK_COMPRESSION=false
+COMPRESSION_CHUNK_SIZE=""
 PCM_MEMORY="/users/proteet/pcm/build/bin/pcm-memory"
 
 # Function to show usage
@@ -33,6 +35,8 @@ show_usage() {
     echo "  --profile-output FILE      Perf output file (default: perf.data)"
     echo "  --use-probex               Use probex for profiling"
     echo "  --flamegraph-output FILE   Flamegraph output file (default: flamegraph.svg)"
+    echo "  --benchmark-compression    Benchmark compression ratio after merge"
+    echo "  --compression-chunk-size N Delta-encoding chunk size (default: 256)"
     echo "  --help, -h                 Show this help message"
     echo ""
     echo "Size units: B (bytes), K (KB), M (MB), G (GB)"
@@ -105,6 +109,14 @@ while [[ $# -gt 0 ]]; do
             USE_PROBEX=true
             shift
             ;;
+        --benchmark-compression)
+            BENCHMARK_COMPRESSION=true
+            shift
+            ;;
+        --compression-chunk-size)
+            COMPRESSION_CHUNK_SIZE="$2"
+            shift 2
+            ;;
         --help|-h)
             show_usage
             exit 0
@@ -174,6 +186,14 @@ fi
 
 if [ "$USE_ASYNC_IO" = true ]; then
     CMD_ARGS="$CMD_ARGS --use-async"
+fi
+
+if [ "$BENCHMARK_COMPRESSION" = true ]; then
+    CMD_ARGS="$CMD_ARGS --benchmark-compression"
+fi
+
+if [ -n "$COMPRESSION_CHUNK_SIZE" ]; then
+    CMD_ARGS="$CMD_ARGS --compression-chunk-size $COMPRESSION_CHUNK_SIZE"
 fi
 
 echo "Running sorter with parameters:"

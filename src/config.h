@@ -27,6 +27,9 @@ struct Config {
     /** If true, use io_uring for phase 1+2 (read + extract keys). Requires liburing. */
     bool use_async{false};
 
+    bool benchmark_compression{false};
+    uint64_t compression_chunk_size{256};
+
     inline uint64_t num_runs() {
         return (file_size_bytes + run_size_bytes - 1) / run_size_bytes;
     }
