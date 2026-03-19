@@ -473,14 +473,15 @@ void Sorter<RecordType>::sort() {
             int fd = open(file_name.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0644);
             uint64_t map_size = num_records_in_run * RecordType::VALUE_LENGTH;
 
-            int ret = ftruncate(fd, map_size);
+            int ret = fallocate(fd, 0, 0, map_size);
             assert(ret == 0);
             void *intermediate_mapped = mmap(nullptr, map_size, 
-                PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, fd, 0);
             assert(intermediate_mapped != MAP_FAILED);
             madvise(intermediate_mapped, map_size, MADV_SEQUENTIAL);
 
             generate_run_for_merge_sort(input_ptr, intermediate_mapped, key_index_pairs[i], i, num_records_in_run);
+            madvise(intermediate_mapped, map_size, MADV_DONTNEED);
             fds.push_back(fd);
             mapped_bufs.push_back(intermediate_mapped);
         } else {
@@ -738,9 +739,9 @@ void Sorter<RecordType>::write_back_values_post_merge_mmap(std::vector<int> &fds
         std::string path = config.output_file + "-task-" + std::to_string(i);
         int fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0644);
         assert(fd != -1);
-        int ret = ftruncate(fd, output_size);
+        int ret = fallocate64(fd, 0, 0, output_size);
         assert(ret == 0);
-        void *out_map = mmap(nullptr, output_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        void *out_map = mmap(nullptr, output_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, fd, 0);
         assert(out_map != MAP_FAILED);
         madvise(out_map, output_size, MADV_SEQUENTIAL);
         output_ptrs.push_back(out_map);
